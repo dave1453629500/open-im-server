@@ -20,9 +20,9 @@ maxConcurrentWorkers: 3
 #Use geTui for offline push notifications, or choose fcm or jpush; corresponding configuration settings must be specified.
 enable: geTui
 geTui:
-  pushUrl: https://restapi.getui.com/v2/$appId
-  masterSecret:
-  appKey:
+  pushUrl: https://restapi.getui.com/v2/BzImvagcEG7bcsF0t0sfy4
+  masterSecret: 9dvrUvmu3Y9dxSAvvZj3KA
+  appKey: H6Roei93kl8ODvy3LqQBQA
   intent:
   channelID:
   channelName:
