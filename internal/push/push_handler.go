@@ -207,9 +207,9 @@ func (c *ConsumerHandler) shouldPushOffline(_ context.Context, msg *sdkws.MsgDat
 	if !isOfflinePush {
 		return false
 	}
-	if msg.ContentType == constant.SignalingNotification {
-		return false
-	}
+	//if msg.ContentType == constant.SignalingNotification {
+	//	return false
+	//}
 	return true
 }
 
