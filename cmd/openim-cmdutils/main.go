@@ -16,7 +16,6 @@ package main
 
 import (
 	"github.com/openimsdk/open-im-server/v3/pkg/common/cmd"
-	"github.com/openimsdk/tools/system/program"
 )
 
 func main() {
@@ -29,8 +28,6 @@ func main() {
 	getCmd.AddCommand(seqCmd.GetSeqCmd(), msgCmd.GetMsgCmd())
 	getCmd.AddSuperGroupIDFlag()
 	getCmd.AddUserIDFlag()
-	getCmd.AddConfigDirFlag()
-	getCmd.AddIndexFlag()
 	getCmd.AddBeginSeqFlag()
 	getCmd.AddLimitFlag()
 	// openIM get seq --userID=xxx
@@ -41,8 +38,6 @@ func main() {
 	fixCmd.AddCommand(seqCmd.FixSeqCmd())
 	fixCmd.AddSuperGroupIDFlag()
 	fixCmd.AddUserIDFlag()
-	fixCmd.AddConfigDirFlag()
-	fixCmd.AddIndexFlag()
 	fixCmd.AddFixAllFlag()
 	// openIM fix seq --userID=xxx
 	// openIM fix seq --superGroupID=xxx
@@ -51,8 +46,6 @@ func main() {
 	clearCmd.AddCommand(msgCmd.ClearMsgCmd())
 	clearCmd.AddSuperGroupIDFlag()
 	clearCmd.AddUserIDFlag()
-	clearCmd.AddConfigDirFlag()
-	clearCmd.AddIndexFlag()
 	clearCmd.AddClearAllFlag()
 	clearCmd.AddBeginSeqFlag()
 	clearCmd.AddLimitFlag()
@@ -61,6 +54,6 @@ func main() {
 	// openIM clear msg --clearAll
 	msgUtilsCmd.AddCommand(&getCmd.Command, &fixCmd.Command, &clearCmd.Command)
 	if err := msgUtilsCmd.Execute(); err != nil {
-		program.ExitWithError(err)
+		panic(err)
 	}
 }

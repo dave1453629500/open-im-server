@@ -1,185 +1,120 @@
+// Copyright © 2023 OpenIM. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package msggateway
 
 import (
-	"github.com/openimsdk/tools/utils/datautil"
+	"context"
 	"sync"
-	"time"
+
+	"github.com/OpenIMSDK/tools/log"
+	"github.com/OpenIMSDK/tools/utils"
 )
 
-type UserMap interface {
-	GetAll(userID string) ([]*Client, bool)
-	Get(userID string, platformID int) ([]*Client, bool, bool)
-	Set(userID string, v *Client)
-	DeleteClients(userID string, clients []*Client) (isDeleteUser bool)
-	UserState() <-chan UserState
-	GetAllUserStatus(deadline time.Time, nowtime time.Time) []UserState
-	RecvSubChange(userID string, platformIDs []int32) bool
+type UserMap struct {
+	m sync.Map
 }
 
-type UserState struct {
-	UserID  string
-	Online  []int32
-	Offline []int32
+func newUserMap() *UserMap {
+	return &UserMap{}
 }
 
-type UserPlatform struct {
-	Time    time.Time
-	Clients []*Client
-}
-
-func (u *UserPlatform) PlatformIDs() []int32 {
-	if len(u.Clients) == 0 {
-		return nil
-	}
-	platformIDs := make([]int32, 0, len(u.Clients))
-	for _, client := range u.Clients {
-		platformIDs = append(platformIDs, int32(client.PlatformID))
-	}
-	return platformIDs
-}
-
-func (u *UserPlatform) PlatformIDSet() map[int32]struct{} {
-	if len(u.Clients) == 0 {
-		return nil
-	}
-	platformIDs := make(map[int32]struct{})
-	for _, client := range u.Clients {
-		platformIDs[int32(client.PlatformID)] = struct{}{}
-	}
-	return platformIDs
-}
-
-func newUserMap() UserMap {
-	return &userMap{
-		data: make(map[string]*UserPlatform),
-		ch:   make(chan UserState, 10000),
-	}
-}
-
-type userMap struct {
-	lock sync.RWMutex
-	data map[string]*UserPlatform
-	ch   chan UserState
-}
-
-func (u *userMap) RecvSubChange(userID string, platformIDs []int32) bool {
-	u.lock.RLock()
-	defer u.lock.RUnlock()
-	result, ok := u.data[userID]
-	if !ok {
-		return false
-	}
-	localPlatformIDs := result.PlatformIDSet()
-	for _, platformID := range platformIDs {
-		delete(localPlatformIDs, platformID)
-	}
-	if len(localPlatformIDs) == 0 {
-		return false
-	}
-	u.push(userID, result, nil)
-	return true
-}
-
-func (u *userMap) push(userID string, userPlatform *UserPlatform, offline []int32) bool {
-	select {
-	case u.ch <- UserState{UserID: userID, Online: userPlatform.PlatformIDs(), Offline: offline}:
-		userPlatform.Time = time.Now()
-		return true
-	default:
-		return false
-	}
-}
-
-func (u *userMap) GetAll(userID string) ([]*Client, bool) {
-	u.lock.RLock()
-	defer u.lock.RUnlock()
-	result, ok := u.data[userID]
-	if !ok {
-		return nil, false
-	}
-	return result.Clients, true
-}
-
-func (u *userMap) Get(userID string, platformID int) ([]*Client, bool, bool) {
-	u.lock.RLock()
-	defer u.lock.RUnlock()
-	result, ok := u.data[userID]
-	if !ok {
-		return nil, false, false
-	}
-	var clients []*Client
-	for _, client := range result.Clients {
-		if client.PlatformID == platformID {
-			clients = append(clients, client)
-		}
-	}
-	return clients, true, len(clients) > 0
-}
-
-func (u *userMap) Set(userID string, client *Client) {
-	u.lock.Lock()
-	defer u.lock.Unlock()
-	result, ok := u.data[userID]
+func (u *UserMap) GetAll(key string) ([]*Client, bool) {
+	allClients, ok := u.m.Load(key)
 	if ok {
-		result.Clients = append(result.Clients, client)
+		return allClients.([]*Client), ok
+	}
+	return nil, ok
+}
+
+func (u *UserMap) Get(key string, platformID int) ([]*Client, bool, bool) {
+	allClients, userExisted := u.m.Load(key)
+	if userExisted {
+		var clients []*Client
+		for _, client := range allClients.([]*Client) {
+			if client.PlatformID == platformID {
+				clients = append(clients, client)
+			}
+		}
+		if len(clients) > 0 {
+			return clients, userExisted, true
+		}
+		return clients, userExisted, false
+	}
+	return nil, userExisted, false
+}
+
+func (u *UserMap) Set(key string, v *Client) {
+	allClients, existed := u.m.Load(key)
+	if existed {
+		log.ZDebug(context.Background(), "Set existed", "user_id", key, "client", *v)
+		oldClients := allClients.([]*Client)
+		oldClients = append(oldClients, v)
+		u.m.Store(key, oldClients)
 	} else {
-		result = &UserPlatform{
-			Clients: []*Client{client},
-		}
-		u.data[userID] = result
+		log.ZDebug(context.Background(), "Set not existed", "user_id", key, "client", *v)
+		var clients []*Client
+		clients = append(clients, v)
+		u.m.Store(key, clients)
 	}
-	u.push(client.UserID, result, nil)
 }
 
-func (u *userMap) DeleteClients(userID string, clients []*Client) (isDeleteUser bool) {
-	if len(clients) == 0 {
-		return false
-	}
-	u.lock.Lock()
-	defer u.lock.Unlock()
-	result, ok := u.data[userID]
-	if !ok {
-		return false
-	}
-	offline := make([]int32, 0, len(clients))
-	deleteAddr := datautil.SliceSetAny(clients, func(client *Client) string {
-		return client.ctx.GetRemoteAddr()
-	})
-	tmp := result.Clients
-	result.Clients = result.Clients[:0]
-	for _, client := range tmp {
-		if _, delCli := deleteAddr[client.ctx.GetRemoteAddr()]; delCli {
-			offline = append(offline, int32(client.PlatformID))
+func (u *UserMap) delete(key string, connRemoteAddr string) (isDeleteUser bool) {
+	allClients, existed := u.m.Load(key)
+	if existed {
+		oldClients := allClients.([]*Client)
+		var a []*Client
+		for _, client := range oldClients {
+			if client.ctx.GetRemoteAddr() != connRemoteAddr {
+				a = append(a, client)
+			}
+		}
+		if len(a) == 0 {
+			u.m.Delete(key)
+			return true
 		} else {
-			result.Clients = append(result.Clients, client)
+			u.m.Store(key, a)
+			return false
 		}
 	}
-	defer u.push(userID, result, offline)
-	if len(result.Clients) > 0 {
-		return false
-	}
-	delete(u.data, userID)
-	return true
+	return existed
 }
 
-func (u *userMap) GetAllUserStatus(deadline time.Time, nowtime time.Time) (result []UserState) {
-	u.lock.RLock()
-	defer u.lock.RUnlock()
-	result = make([]UserState, 0, len(u.data))
-	for userID, userPlatform := range u.data {
-		if deadline.Before(userPlatform.Time) {
-			continue
+func (u *UserMap) deleteClients(key string, clients []*Client) (isDeleteUser bool) {
+	m := utils.SliceToMapAny(clients, func(c *Client) (string, struct{}) {
+		return c.ctx.GetRemoteAddr(), struct{}{}
+	})
+	allClients, existed := u.m.Load(key)
+	if existed {
+		oldClients := allClients.([]*Client)
+		var a []*Client
+		for _, client := range oldClients {
+			if _, ok := m[client.ctx.GetRemoteAddr()]; !ok {
+				a = append(a, client)
+			}
 		}
-		userPlatform.Time = nowtime
-		online := make([]int32, 0, len(userPlatform.Clients))
-		for _, client := range userPlatform.Clients {
-			online = append(online, int32(client.PlatformID))
+		if len(a) == 0 {
+			u.m.Delete(key)
+			return true
+		} else {
+			u.m.Store(key, a)
+			return false
 		}
-		result = append(result, UserState{UserID: userID, Online: online})
 	}
-	return result
+	return existed
 }
 
-func (u *userMap) UserState() <-chan UserState {
-	return u.ch
+func (u *UserMap) DeleteAll(key string) {
+	u.m.Delete(key)
 }

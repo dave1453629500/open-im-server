@@ -18,66 +18,71 @@ import (
 	"context"
 	"time"
 
+	"github.com/OpenIMSDK/tools/log"
+
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/protocol/group"
+	"github.com/OpenIMSDK/protocol/wrapperspb"
+	"github.com/OpenIMSDK/tools/mcontext"
+	"github.com/OpenIMSDK/tools/utils"
+
+	pbgroup "github.com/OpenIMSDK/protocol/group"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/apistruct"
 	"github.com/openimsdk/open-im-server/v3/pkg/callbackstruct"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/protocol/group"
-	"github.com/openimsdk/protocol/wrapperspb"
-	"github.com/openimsdk/tools/log"
-	"github.com/openimsdk/tools/mcontext"
-	"github.com/openimsdk/tools/utils/datautil"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/table/relation"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/http"
 )
 
-// CallbackBeforeCreateGroup callback before create group.
-func (g *groupServer) webhookBeforeCreateGroup(ctx context.Context, before *config.BeforeConfig, req *group.CreateGroupReq) error {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		cbReq := &callbackstruct.CallbackBeforeCreateGroupReq{
-			CallbackCommand: callbackstruct.CallbackBeforeCreateGroupCommand,
-			OperationID:     mcontext.GetOperationID(ctx),
-			GroupInfo:       req.GroupInfo,
-		}
-		cbReq.InitMemberList = append(cbReq.InitMemberList, &apistruct.GroupAddMemberInfo{
-			UserID:    req.OwnerUserID,
-			RoleLevel: constant.GroupOwner,
-		})
-		for _, userID := range req.AdminUserIDs {
-			cbReq.InitMemberList = append(cbReq.InitMemberList, &apistruct.GroupAddMemberInfo{
-				UserID:    userID,
-				RoleLevel: constant.GroupAdmin,
-			})
-		}
-		for _, userID := range req.MemberUserIDs {
-			cbReq.InitMemberList = append(cbReq.InitMemberList, &apistruct.GroupAddMemberInfo{
-				UserID:    userID,
-				RoleLevel: constant.GroupOrdinaryUsers,
-			})
-		}
-		resp := &callbackstruct.CallbackBeforeCreateGroupResp{}
-
-		if err := g.webhookClient.SyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, resp, before); err != nil {
-			return err
-		}
-
-		datautil.NotNilReplace(&req.GroupInfo.GroupID, resp.GroupID)
-		datautil.NotNilReplace(&req.GroupInfo.GroupName, resp.GroupName)
-		datautil.NotNilReplace(&req.GroupInfo.Notification, resp.Notification)
-		datautil.NotNilReplace(&req.GroupInfo.Introduction, resp.Introduction)
-		datautil.NotNilReplace(&req.GroupInfo.FaceURL, resp.FaceURL)
-		datautil.NotNilReplace(&req.GroupInfo.OwnerUserID, resp.OwnerUserID)
-		datautil.NotNilReplace(&req.GroupInfo.Ex, resp.Ex)
-		datautil.NotNilReplace(&req.GroupInfo.Status, resp.Status)
-		datautil.NotNilReplace(&req.GroupInfo.CreatorUserID, resp.CreatorUserID)
-		datautil.NotNilReplace(&req.GroupInfo.GroupType, resp.GroupType)
-		datautil.NotNilReplace(&req.GroupInfo.NeedVerification, resp.NeedVerification)
-		datautil.NotNilReplace(&req.GroupInfo.LookMemberInfo, resp.LookMemberInfo)
+func CallbackBeforeCreateGroup(ctx context.Context, req *group.CreateGroupReq) (err error) {
+	if !config.Config.Callback.CallbackBeforeCreateGroup.Enable {
 		return nil
+	}
+	cbReq := &callbackstruct.CallbackBeforeCreateGroupReq{
+		CallbackCommand: callbackstruct.CallbackBeforeCreateGroupCommand,
+		OperationID:     mcontext.GetOperationID(ctx),
+		GroupInfo:       req.GroupInfo,
+	}
+	cbReq.InitMemberList = append(cbReq.InitMemberList, &apistruct.GroupAddMemberInfo{
+		UserID:    req.OwnerUserID,
+		RoleLevel: constant.GroupOwner,
 	})
+	for _, userID := range req.AdminUserIDs {
+		cbReq.InitMemberList = append(cbReq.InitMemberList, &apistruct.GroupAddMemberInfo{
+			UserID:    userID,
+			RoleLevel: constant.GroupAdmin,
+		})
+	}
+	for _, userID := range req.MemberUserIDs {
+		cbReq.InitMemberList = append(cbReq.InitMemberList, &apistruct.GroupAddMemberInfo{
+			UserID:    userID,
+			RoleLevel: constant.GroupOrdinaryUsers,
+		})
+	}
+	resp := &callbackstruct.CallbackBeforeCreateGroupResp{}
+	if err = http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, cbReq, resp, config.Config.Callback.CallbackBeforeCreateGroup); err != nil {
+		return err
+	}
+	utils.NotNilReplace(&req.GroupInfo.GroupID, resp.GroupID)
+	utils.NotNilReplace(&req.GroupInfo.GroupName, resp.GroupName)
+	utils.NotNilReplace(&req.GroupInfo.Notification, resp.Notification)
+	utils.NotNilReplace(&req.GroupInfo.Introduction, resp.Introduction)
+	utils.NotNilReplace(&req.GroupInfo.FaceURL, resp.FaceURL)
+	utils.NotNilReplace(&req.GroupInfo.OwnerUserID, resp.OwnerUserID)
+	utils.NotNilReplace(&req.GroupInfo.Ex, resp.Ex)
+	utils.NotNilReplace(&req.GroupInfo.Status, resp.Status)
+	utils.NotNilReplace(&req.GroupInfo.CreatorUserID, resp.CreatorUserID)
+	utils.NotNilReplace(&req.GroupInfo.GroupType, resp.GroupType)
+	utils.NotNilReplace(&req.GroupInfo.NeedVerification, resp.NeedVerification)
+	utils.NotNilReplace(&req.GroupInfo.LookMemberInfo, resp.LookMemberInfo)
+	return nil
 }
 
-func (g *groupServer) webhookAfterCreateGroup(ctx context.Context, after *config.AfterConfig, req *group.CreateGroupReq) {
+func CallbackAfterCreateGroup(ctx context.Context, req *group.CreateGroupReq) (err error) {
+	if !config.Config.Callback.CallbackAfterCreateGroup.Enable {
+		return nil
+	}
 	cbReq := &callbackstruct.CallbackAfterCreateGroupReq{
 		CallbackCommand: callbackstruct.CallbackAfterCreateGroupCommand,
 		GroupInfo:       req.GroupInfo,
@@ -98,185 +103,238 @@ func (g *groupServer) webhookAfterCreateGroup(ctx context.Context, after *config
 			RoleLevel: constant.GroupOrdinaryUsers,
 		})
 	}
-	g.webhookClient.AsyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, &callbackstruct.CallbackAfterCreateGroupResp{}, after)
+	resp := &callbackstruct.CallbackAfterCreateGroupResp{}
+	if err = http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, cbReq, resp, config.Config.Callback.CallbackAfterCreateGroup); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (g *groupServer) webhookBeforeMembersJoinGroup(ctx context.Context, before *config.BeforeConfig, groupMembers []*model.GroupMember, groupID string, groupEx string) error {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		groupMembersMap := datautil.SliceToMap(groupMembers, func(e *model.GroupMember) string {
-			return e.UserID
-		})
-		var groupMembersCallback []*callbackstruct.CallbackGroupMember
-
-		for _, member := range groupMembers {
-			groupMembersCallback = append(groupMembersCallback, &callbackstruct.CallbackGroupMember{
-				UserID: member.UserID,
-				Ex:     member.Ex,
-			})
-		}
-
-		cbReq := &callbackstruct.CallbackBeforeMembersJoinGroupReq{
-			CallbackCommand: callbackstruct.CallbackBeforeMembersJoinGroupCommand,
-			GroupID:         groupID,
-			MembersList:     groupMembersCallback,
-			GroupEx:         groupEx,
-		}
-		resp := &callbackstruct.CallbackBeforeMembersJoinGroupResp{}
-
-		if err := g.webhookClient.SyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, resp, before); err != nil {
-			return err
-		}
-
-		for _, memberCallbackResp := range resp.MemberCallbackList {
-			if _, ok := groupMembersMap[(*memberCallbackResp.UserID)]; ok {
-				if memberCallbackResp.MuteEndTime != nil {
-					groupMembersMap[(*memberCallbackResp.UserID)].MuteEndTime = time.UnixMilli(*memberCallbackResp.MuteEndTime)
-				}
-
-				datautil.NotNilReplace(&groupMembersMap[(*memberCallbackResp.UserID)].FaceURL, memberCallbackResp.FaceURL)
-				datautil.NotNilReplace(&groupMembersMap[(*memberCallbackResp.UserID)].Ex, memberCallbackResp.Ex)
-				datautil.NotNilReplace(&groupMembersMap[(*memberCallbackResp.UserID)].Nickname, memberCallbackResp.Nickname)
-				datautil.NotNilReplace(&groupMembersMap[(*memberCallbackResp.UserID)].RoleLevel, memberCallbackResp.RoleLevel)
-			}
-		}
-
+func CallbackBeforeMemberJoinGroup(
+	ctx context.Context,
+	groupMember *relation.GroupMemberModel,
+	groupEx string,
+) (err error) {
+	if !config.Config.Callback.CallbackBeforeMemberJoinGroup.Enable {
 		return nil
-	})
+	}
+	callbackReq := &callbackstruct.CallbackBeforeMemberJoinGroupReq{
+		CallbackCommand: callbackstruct.CallbackBeforeMemberJoinGroupCommand,
+		GroupID:         groupMember.GroupID,
+		UserID:          groupMember.UserID,
+		Ex:              groupMember.Ex,
+		GroupEx:         groupEx,
+	}
+	resp := &callbackstruct.CallbackBeforeMemberJoinGroupResp{}
+	err = http.CallBackPostReturn(
+		ctx,
+		config.Config.Callback.CallbackUrl,
+		callbackReq,
+		resp,
+		config.Config.Callback.CallbackBeforeMemberJoinGroup,
+	)
+	if err != nil {
+		return err
+	}
+	if resp.MuteEndTime != nil {
+		groupMember.MuteEndTime = time.UnixMilli(*resp.MuteEndTime)
+	}
+	utils.NotNilReplace(&groupMember.FaceURL, resp.FaceURL)
+	utils.NotNilReplace(&groupMember.Ex, resp.Ex)
+	utils.NotNilReplace(&groupMember.Nickname, resp.Nickname)
+	utils.NotNilReplace(&groupMember.RoleLevel, resp.RoleLevel)
+	return nil
 }
 
-func (g *groupServer) webhookBeforeSetGroupMemberInfo(ctx context.Context, before *config.BeforeConfig, req *group.SetGroupMemberInfo) error {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		cbReq := callbackstruct.CallbackBeforeSetGroupMemberInfoReq{
-			CallbackCommand: callbackstruct.CallbackBeforeSetGroupMemberInfoCommand,
-			GroupID:         req.GroupID,
-			UserID:          req.UserID,
-		}
-		if req.Nickname != nil {
-			cbReq.Nickname = &req.Nickname.Value
-		}
-		if req.FaceURL != nil {
-			cbReq.FaceURL = &req.FaceURL.Value
-		}
-		if req.RoleLevel != nil {
-			cbReq.RoleLevel = &req.RoleLevel.Value
-		}
-		if req.Ex != nil {
-			cbReq.Ex = &req.Ex.Value
-		}
-		resp := &callbackstruct.CallbackBeforeSetGroupMemberInfoResp{}
-		if err := g.webhookClient.SyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, resp, before); err != nil {
-			return err
-		}
-		if resp.FaceURL != nil {
-			req.FaceURL = wrapperspb.String(*resp.FaceURL)
-		}
-		if resp.Nickname != nil {
-			req.Nickname = wrapperspb.String(*resp.Nickname)
-		}
-		if resp.RoleLevel != nil {
-			req.RoleLevel = wrapperspb.Int32(*resp.RoleLevel)
-		}
-		if resp.Ex != nil {
-			req.Ex = wrapperspb.String(*resp.Ex)
-		}
+func CallbackBeforeSetGroupMemberInfo(ctx context.Context, req *group.SetGroupMemberInfo) (err error) {
+	if !config.Config.Callback.CallbackBeforeSetGroupMemberInfo.Enable {
 		return nil
-	})
+	}
+	callbackReq := callbackstruct.CallbackBeforeSetGroupMemberInfoReq{
+		CallbackCommand: callbackstruct.CallbackBeforeSetGroupMemberInfoCommand,
+		GroupID:         req.GroupID,
+		UserID:          req.UserID,
+	}
+	if req.Nickname != nil {
+		callbackReq.Nickname = &req.Nickname.Value
+	}
+	if req.FaceURL != nil {
+		callbackReq.FaceURL = &req.FaceURL.Value
+	}
+	if req.RoleLevel != nil {
+		callbackReq.RoleLevel = &req.RoleLevel.Value
+	}
+	if req.Ex != nil {
+		callbackReq.Ex = &req.Ex.Value
+	}
+	resp := &callbackstruct.CallbackBeforeSetGroupMemberInfoResp{}
+	err = http.CallBackPostReturn(
+		ctx,
+		config.Config.Callback.CallbackUrl,
+		callbackReq,
+		resp,
+		config.Config.Callback.CallbackBeforeSetGroupMemberInfo,
+	)
+	if err != nil {
+		return err
+	}
+	if resp.FaceURL != nil {
+		req.FaceURL = wrapperspb.String(*resp.FaceURL)
+	}
+	if resp.Nickname != nil {
+		req.Nickname = wrapperspb.String(*resp.Nickname)
+	}
+	if resp.RoleLevel != nil {
+		req.RoleLevel = wrapperspb.Int32(*resp.RoleLevel)
+	}
+	if resp.Ex != nil {
+		req.Ex = wrapperspb.String(*resp.Ex)
+	}
+	return nil
 }
-
-func (g *groupServer) webhookAfterSetGroupMemberInfo(ctx context.Context, after *config.AfterConfig, req *group.SetGroupMemberInfo) {
-	cbReq := callbackstruct.CallbackAfterSetGroupMemberInfoReq{
+func CallbackAfterSetGroupMemberInfo(ctx context.Context, req *group.SetGroupMemberInfo) (err error) {
+	if !config.Config.Callback.CallbackBeforeSetGroupMemberInfo.Enable {
+		return nil
+	}
+	callbackReq := callbackstruct.CallbackAfterSetGroupMemberInfoReq{
 		CallbackCommand: callbackstruct.CallbackAfterSetGroupMemberInfoCommand,
 		GroupID:         req.GroupID,
 		UserID:          req.UserID,
 	}
 	if req.Nickname != nil {
-		cbReq.Nickname = &req.Nickname.Value
+		callbackReq.Nickname = &req.Nickname.Value
 	}
 	if req.FaceURL != nil {
-		cbReq.FaceURL = &req.FaceURL.Value
+		callbackReq.FaceURL = &req.FaceURL.Value
 	}
 	if req.RoleLevel != nil {
-		cbReq.RoleLevel = &req.RoleLevel.Value
+		callbackReq.RoleLevel = &req.RoleLevel.Value
 	}
 	if req.Ex != nil {
-		cbReq.Ex = &req.Ex.Value
+		callbackReq.Ex = &req.Ex.Value
 	}
-	g.webhookClient.AsyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, &callbackstruct.CallbackAfterSetGroupMemberInfoResp{}, after)
+	resp := &callbackstruct.CallbackAfterSetGroupMemberInfoResp{}
+	if err = http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, callbackReq, resp, config.Config.Callback.CallbackAfterSetGroupMemberInfo); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (g *groupServer) webhookAfterQuitGroup(ctx context.Context, after *config.AfterConfig, req *group.QuitGroupReq) {
+func CallbackQuitGroup(ctx context.Context, req *group.QuitGroupReq) (err error) {
+	if !config.Config.Callback.CallbackQuitGroup.Enable {
+		return nil
+	}
 	cbReq := &callbackstruct.CallbackQuitGroupReq{
-		CallbackCommand: callbackstruct.CallbackAfterQuitGroupCommand,
+		CallbackCommand: callbackstruct.CallbackQuitGroupCommand,
 		GroupID:         req.GroupID,
 		UserID:          req.UserID,
 	}
-	g.webhookClient.AsyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, &callbackstruct.CallbackQuitGroupResp{}, after)
+	resp := &callbackstruct.CallbackQuitGroupResp{}
+	if err = http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, cbReq, resp, config.Config.Callback.CallbackQuitGroup); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (g *groupServer) webhookAfterKickGroupMember(ctx context.Context, after *config.AfterConfig, req *group.KickGroupMemberReq) {
+func CallbackKillGroupMember(ctx context.Context, req *pbgroup.KickGroupMemberReq) (err error) {
+	if !config.Config.Callback.CallbackKillGroupMember.Enable {
+		return nil
+	}
 	cbReq := &callbackstruct.CallbackKillGroupMemberReq{
-		CallbackCommand: callbackstruct.CallbackAfterKickGroupCommand,
+		CallbackCommand: callbackstruct.CallbackKillGroupCommand,
 		GroupID:         req.GroupID,
 		KickedUserIDs:   req.KickedUserIDs,
-		Reason:          req.Reason,
 	}
-	g.webhookClient.AsyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, &callbackstruct.CallbackKillGroupMemberResp{}, after)
+	resp := &callbackstruct.CallbackKillGroupMemberResp{}
+	if err = http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, cbReq, resp, config.Config.Callback.CallbackQuitGroup); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (g *groupServer) webhookAfterDismissGroup(ctx context.Context, after *config.AfterConfig, req *callbackstruct.CallbackDisMissGroupReq) {
-	req.CallbackCommand = callbackstruct.CallbackAfterDisMissGroupCommand
-	g.webhookClient.AsyncPost(ctx, req.GetCallbackCommand(), req, &callbackstruct.CallbackDisMissGroupResp{}, after)
-}
-
-func (g *groupServer) webhookBeforeApplyJoinGroup(ctx context.Context, before *config.BeforeConfig, req *callbackstruct.CallbackJoinGroupReq) (err error) {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		req.CallbackCommand = callbackstruct.CallbackBeforeJoinGroupCommand
-		resp := &callbackstruct.CallbackJoinGroupResp{}
-		if err := g.webhookClient.SyncPost(ctx, req.GetCallbackCommand(), req, resp, before); err != nil {
-			return err
-		}
+func CallbackDismissGroup(ctx context.Context, req *callbackstruct.CallbackDisMissGroupReq) (err error) {
+	if !config.Config.Callback.CallbackDismissGroup.Enable {
 		return nil
-	})
+	}
+	req.CallbackCommand = callbackstruct.CallbackDisMissGroupCommand
+	resp := &callbackstruct.CallbackDisMissGroupResp{}
+	if err = http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, req, resp, config.Config.Callback.CallbackQuitGroup); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (g *groupServer) webhookAfterTransferGroupOwner(ctx context.Context, after *config.AfterConfig, req *group.TransferGroupOwnerReq) {
+func CallbackApplyJoinGroupBefore(ctx context.Context, req *callbackstruct.CallbackJoinGroupReq) (err error) {
+	if !config.Config.Callback.CallbackBeforeJoinGroup.Enable {
+		return nil
+	}
+
+	req.CallbackCommand = callbackstruct.CallbackBeforeJoinGroupCommand
+
+	resp := &callbackstruct.CallbackJoinGroupResp{}
+	if err = http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, req, resp, config.Config.Callback.CallbackBeforeJoinGroup); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func CallbackTransferGroupOwnerAfter(ctx context.Context, req *pbgroup.TransferGroupOwnerReq) (err error) {
+	if !config.Config.Callback.CallbackTransferGroupOwnerAfter.Enable {
+		return nil
+	}
+
 	cbReq := &callbackstruct.CallbackTransferGroupOwnerReq{
-		CallbackCommand: callbackstruct.CallbackAfterTransferGroupOwnerCommand,
+		CallbackCommand: callbackstruct.CallbackTransferGroupOwnerAfter,
 		GroupID:         req.GroupID,
 		OldOwnerUserID:  req.OldOwnerUserID,
 		NewOwnerUserID:  req.NewOwnerUserID,
 	}
-	g.webhookClient.AsyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, &callbackstruct.CallbackTransferGroupOwnerResp{}, after)
+
+	resp := &callbackstruct.CallbackTransferGroupOwnerResp{}
+	if err = http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, cbReq, resp, config.Config.Callback.CallbackBeforeJoinGroup); err != nil {
+		return err
+	}
+	return nil
 }
+func CallbackBeforeInviteUserToGroup(ctx context.Context, req *group.InviteUserToGroupReq) (err error) {
+	if !config.Config.Callback.CallbackBeforeInviteUserToGroup.Enable {
+		return nil
+	}
 
-func (g *groupServer) webhookBeforeInviteUserToGroup(ctx context.Context, before *config.BeforeConfig, req *group.InviteUserToGroupReq) (err error) {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		cbReq := &callbackstruct.CallbackBeforeInviteUserToGroupReq{
-			CallbackCommand: callbackstruct.CallbackBeforeInviteJoinGroupCommand,
-			OperationID:     mcontext.GetOperationID(ctx),
-			GroupID:         req.GroupID,
-			Reason:          req.Reason,
-			InvitedUserIDs:  req.InvitedUserIDs,
-		}
+	callbackReq := &callbackstruct.CallbackBeforeInviteUserToGroupReq{
+		CallbackCommand: callbackstruct.CallbackBeforeInviteJoinGroupCommand,
+		OperationID:     mcontext.GetOperationID(ctx),
+		GroupID:         req.GroupID,
+		Reason:          req.Reason,
+		InvitedUserIDs:  req.InvitedUserIDs,
+	}
 
-		resp := &callbackstruct.CallbackBeforeInviteUserToGroupResp{}
-		if err := g.webhookClient.SyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, resp, before); err != nil {
-			return err
-		}
+	resp := &callbackstruct.CallbackBeforeInviteUserToGroupResp{}
+	err = http.CallBackPostReturn(
+		ctx,
+		config.Config.Callback.CallbackUrl,
+		callbackReq,
+		resp,
+		config.Config.Callback.CallbackBeforeInviteUserToGroup,
+	)
 
+	if err != nil {
+		return err
+	}
+
+	if len(resp.RefusedMembersAccount) > 0 {
 		// Handle the scenario where certain members are refused
 		// You might want to update the req.Members list or handle it as per your business logic
-
-		// if len(resp.RefusedMembersAccount) > 0 {
-		// implement members are refused
-		// }
-
-		return nil
-	})
+	}
+	return nil
 }
 
-func (g *groupServer) webhookAfterJoinGroup(ctx context.Context, after *config.AfterConfig, req *group.JoinGroupReq) {
-	cbReq := &callbackstruct.CallbackAfterJoinGroupReq{
+func CallbackAfterJoinGroup(ctx context.Context, req *group.JoinGroupReq) error {
+	if !config.Config.Callback.CallbackAfterJoinGroup.Enable {
+		return nil
+	}
+	callbackReq := &callbackstruct.CallbackAfterJoinGroupReq{
 		CallbackCommand: callbackstruct.CallbackAfterJoinGroupCommand,
 		OperationID:     mcontext.GetOperationID(ctx),
 		GroupID:         req.GroupID,
@@ -284,60 +342,68 @@ func (g *groupServer) webhookAfterJoinGroup(ctx context.Context, after *config.A
 		JoinSource:      req.JoinSource,
 		InviterUserID:   req.InviterUserID,
 	}
-	g.webhookClient.AsyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, &callbackstruct.CallbackAfterJoinGroupResp{}, after)
+	resp := &callbackstruct.CallbackAfterJoinGroupResp{}
+	if err := http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, callbackReq, resp, config.Config.Callback.CallbackAfterJoinGroup); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (g *groupServer) webhookBeforeSetGroupInfo(ctx context.Context, before *config.BeforeConfig, req *group.SetGroupInfoReq) error {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		cbReq := &callbackstruct.CallbackBeforeSetGroupInfoReq{
-			CallbackCommand: callbackstruct.CallbackBeforeSetGroupInfoCommand,
-			GroupID:         req.GroupInfoForSet.GroupID,
-			Notification:    req.GroupInfoForSet.Notification,
-			Introduction:    req.GroupInfoForSet.Introduction,
-			FaceURL:         req.GroupInfoForSet.FaceURL,
-			GroupName:       req.GroupInfoForSet.GroupName,
-		}
-		if req.GroupInfoForSet.Ex != nil {
-			cbReq.Ex = req.GroupInfoForSet.Ex.Value
-		}
-		log.ZDebug(ctx, "debug CallbackBeforeSetGroupInfo", "ex", cbReq.Ex)
-		if req.GroupInfoForSet.NeedVerification != nil {
-			cbReq.NeedVerification = req.GroupInfoForSet.NeedVerification.Value
-		}
-		if req.GroupInfoForSet.LookMemberInfo != nil {
-			cbReq.LookMemberInfo = req.GroupInfoForSet.LookMemberInfo.Value
-		}
-		if req.GroupInfoForSet.ApplyMemberFriend != nil {
-			cbReq.ApplyMemberFriend = req.GroupInfoForSet.ApplyMemberFriend.Value
-		}
-		resp := &callbackstruct.CallbackBeforeSetGroupInfoResp{}
-
-		if err := g.webhookClient.SyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, resp, before); err != nil {
-			return err
-		}
-
-		if resp.Ex != nil {
-			req.GroupInfoForSet.Ex = wrapperspb.String(*resp.Ex)
-		}
-		if resp.NeedVerification != nil {
-			req.GroupInfoForSet.NeedVerification = wrapperspb.Int32(*resp.NeedVerification)
-		}
-		if resp.LookMemberInfo != nil {
-			req.GroupInfoForSet.LookMemberInfo = wrapperspb.Int32(*resp.LookMemberInfo)
-		}
-		if resp.ApplyMemberFriend != nil {
-			req.GroupInfoForSet.ApplyMemberFriend = wrapperspb.Int32(*resp.ApplyMemberFriend)
-		}
-		datautil.NotNilReplace(&req.GroupInfoForSet.GroupID, &resp.GroupID)
-		datautil.NotNilReplace(&req.GroupInfoForSet.GroupName, &resp.GroupName)
-		datautil.NotNilReplace(&req.GroupInfoForSet.FaceURL, &resp.FaceURL)
-		datautil.NotNilReplace(&req.GroupInfoForSet.Introduction, &resp.Introduction)
+func CallbackBeforeSetGroupInfo(ctx context.Context, req *group.SetGroupInfoReq) error {
+	if !config.Config.Callback.CallbackBeforeSetGroupInfo.Enable {
 		return nil
-	})
-}
+	}
+	callbackReq := &callbackstruct.CallbackBeforeSetGroupInfoReq{
+		CallbackCommand: callbackstruct.CallbackBeforeSetGroupInfoCommand,
+		GroupID:         req.GroupInfoForSet.GroupID,
+		Notification:    req.GroupInfoForSet.Notification,
+		Introduction:    req.GroupInfoForSet.Introduction,
+		FaceURL:         req.GroupInfoForSet.FaceURL,
+		GroupName:       req.GroupInfoForSet.GroupName,
+	}
 
-func (g *groupServer) webhookAfterSetGroupInfo(ctx context.Context, after *config.AfterConfig, req *group.SetGroupInfoReq) {
-	cbReq := &callbackstruct.CallbackAfterSetGroupInfoReq{
+	if req.GroupInfoForSet.Ex != nil {
+		callbackReq.Ex = req.GroupInfoForSet.Ex.Value
+	}
+	log.ZDebug(ctx, "debug CallbackBeforeSetGroupInfo", callbackReq.Ex)
+	if req.GroupInfoForSet.NeedVerification != nil {
+		callbackReq.NeedVerification = req.GroupInfoForSet.NeedVerification.Value
+	}
+	if req.GroupInfoForSet.LookMemberInfo != nil {
+		callbackReq.LookMemberInfo = req.GroupInfoForSet.LookMemberInfo.Value
+	}
+	if req.GroupInfoForSet.ApplyMemberFriend != nil {
+		callbackReq.ApplyMemberFriend = req.GroupInfoForSet.ApplyMemberFriend.Value
+	}
+	resp := &callbackstruct.CallbackBeforeSetGroupInfoResp{}
+
+	if err := http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, callbackReq, resp, config.Config.Callback.CallbackBeforeSetGroupInfo); err != nil {
+		return err
+	}
+
+	if resp.Ex != nil {
+		req.GroupInfoForSet.Ex = wrapperspb.String(*resp.Ex)
+	}
+	if resp.NeedVerification != nil {
+		req.GroupInfoForSet.NeedVerification = wrapperspb.Int32(*resp.NeedVerification)
+	}
+	if resp.LookMemberInfo != nil {
+		req.GroupInfoForSet.LookMemberInfo = wrapperspb.Int32(*resp.LookMemberInfo)
+	}
+	if resp.ApplyMemberFriend != nil {
+		req.GroupInfoForSet.ApplyMemberFriend = wrapperspb.Int32(*resp.ApplyMemberFriend)
+	}
+	utils.NotNilReplace(&req.GroupInfoForSet.GroupID, &resp.GroupID)
+	utils.NotNilReplace(&req.GroupInfoForSet.GroupName, &resp.GroupName)
+	utils.NotNilReplace(&req.GroupInfoForSet.FaceURL, &resp.FaceURL)
+	utils.NotNilReplace(&req.GroupInfoForSet.Introduction, &resp.Introduction)
+	return nil
+}
+func CallbackAfterSetGroupInfo(ctx context.Context, req *group.SetGroupInfoReq) error {
+	if !config.Config.Callback.CallbackAfterSetGroupInfo.Enable {
+		return nil
+	}
+	callbackReq := &callbackstruct.CallbackAfterSetGroupInfoReq{
 		CallbackCommand: callbackstruct.CallbackAfterSetGroupInfoCommand,
 		GroupID:         req.GroupInfoForSet.GroupID,
 		Notification:    req.GroupInfoForSet.Notification,
@@ -346,87 +412,20 @@ func (g *groupServer) webhookAfterSetGroupInfo(ctx context.Context, after *confi
 		GroupName:       req.GroupInfoForSet.GroupName,
 	}
 	if req.GroupInfoForSet.Ex != nil {
-		cbReq.Ex = &req.GroupInfoForSet.Ex.Value
+		callbackReq.Ex = &req.GroupInfoForSet.Ex.Value
 	}
 	if req.GroupInfoForSet.NeedVerification != nil {
-		cbReq.NeedVerification = &req.GroupInfoForSet.NeedVerification.Value
+		callbackReq.NeedVerification = &req.GroupInfoForSet.NeedVerification.Value
 	}
 	if req.GroupInfoForSet.LookMemberInfo != nil {
-		cbReq.LookMemberInfo = &req.GroupInfoForSet.LookMemberInfo.Value
+		callbackReq.LookMemberInfo = &req.GroupInfoForSet.LookMemberInfo.Value
 	}
 	if req.GroupInfoForSet.ApplyMemberFriend != nil {
-		cbReq.ApplyMemberFriend = &req.GroupInfoForSet.ApplyMemberFriend.Value
+		callbackReq.ApplyMemberFriend = &req.GroupInfoForSet.ApplyMemberFriend.Value
 	}
-	g.webhookClient.AsyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, &callbackstruct.CallbackAfterSetGroupInfoResp{}, after)
-}
-
-func (g *groupServer) webhookBeforeSetGroupInfoEx(ctx context.Context, before *config.BeforeConfig, req *group.SetGroupInfoExReq) error {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		cbReq := &callbackstruct.CallbackBeforeSetGroupInfoExReq{
-			CallbackCommand: callbackstruct.CallbackBeforeSetGroupInfoExCommand,
-			GroupID:         req.GroupID,
-			GroupName:       req.GroupName,
-			Notification:    req.Notification,
-			Introduction:    req.Introduction,
-			FaceURL:         req.FaceURL,
-		}
-
-		if req.Ex != nil {
-			cbReq.Ex = req.Ex
-		}
-		log.ZDebug(ctx, "debug CallbackBeforeSetGroupInfoEx", "ex", cbReq.Ex)
-
-		if req.NeedVerification != nil {
-			cbReq.NeedVerification = req.NeedVerification
-		}
-		if req.LookMemberInfo != nil {
-			cbReq.LookMemberInfo = req.LookMemberInfo
-		}
-		if req.ApplyMemberFriend != nil {
-			cbReq.ApplyMemberFriend = req.ApplyMemberFriend
-		}
-
-		resp := &callbackstruct.CallbackBeforeSetGroupInfoExResp{}
-
-		if err := g.webhookClient.SyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, resp, before); err != nil {
-			return err
-		}
-
-		datautil.NotNilReplace(&req.GroupID, &resp.GroupID)
-		datautil.NotNilReplace(&req.GroupName, &resp.GroupName)
-		datautil.NotNilReplace(&req.FaceURL, &resp.FaceURL)
-		datautil.NotNilReplace(&req.Introduction, &resp.Introduction)
-		datautil.NotNilReplace(&req.Ex, &resp.Ex)
-		datautil.NotNilReplace(&req.NeedVerification, &resp.NeedVerification)
-		datautil.NotNilReplace(&req.LookMemberInfo, &resp.LookMemberInfo)
-		datautil.NotNilReplace(&req.ApplyMemberFriend, &resp.ApplyMemberFriend)
-
-		return nil
-	})
-}
-
-func (g *groupServer) webhookAfterSetGroupInfoEx(ctx context.Context, after *config.AfterConfig, req *group.SetGroupInfoExReq) {
-	cbReq := &callbackstruct.CallbackAfterSetGroupInfoExReq{
-		CallbackCommand: callbackstruct.CallbackAfterSetGroupInfoExCommand,
-		GroupID:         req.GroupID,
-		GroupName:       req.GroupName,
-		Notification:    req.Notification,
-		Introduction:    req.Introduction,
-		FaceURL:         req.FaceURL,
+	resp := &callbackstruct.CallbackAfterSetGroupInfoResp{}
+	if err := http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, callbackReq, resp, config.Config.Callback.CallbackAfterSetGroupInfo); err != nil {
+		return err
 	}
-
-	if req.Ex != nil {
-		cbReq.Ex = req.Ex
-	}
-	if req.NeedVerification != nil {
-		cbReq.NeedVerification = req.NeedVerification
-	}
-	if req.LookMemberInfo != nil {
-		cbReq.LookMemberInfo = req.LookMemberInfo
-	}
-	if req.ApplyMemberFriend != nil {
-		cbReq.ApplyMemberFriend = req.ApplyMemberFriend
-	}
-
-	g.webhookClient.AsyncPost(ctx, cbReq.GetCallbackCommand(), cbReq, &callbackstruct.CallbackAfterSetGroupInfoExResp{}, after)
+	return nil
 }

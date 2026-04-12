@@ -15,12 +15,19 @@
 package main
 
 import (
+	"github.com/openimsdk/open-im-server/v3/internal/rpc/third"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/cmd"
-	"github.com/openimsdk/tools/system/program"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 )
 
 func main() {
-	if err := cmd.NewThirdRpcCmd().Exec(); err != nil {
-		program.ExitWithError(err)
+	rpcCmd := cmd.NewRpcCmd(cmd.RpcThirdServer)
+	rpcCmd.AddPortFlag()
+	rpcCmd.AddPrometheusPortFlag()
+	if err := rpcCmd.Exec(); err != nil {
+		panic(err.Error())
+	}
+	if err := rpcCmd.StartSvr(config.Config.RpcRegisterName.OpenImThirdName, third.Start); err != nil {
+		panic(err.Error())
 	}
 }

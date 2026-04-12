@@ -15,11 +15,12 @@
 package group
 
 import (
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
-	"github.com/openimsdk/protocol/sdkws"
+	"github.com/OpenIMSDK/protocol/sdkws"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/table/relation"
 )
 
-func (g *groupServer) groupDB2PB(group *model.Group, ownerUserID string, memberCount uint32) *sdkws.GroupInfo {
+func (s *groupServer) groupDB2PB(group *relation.GroupModel, ownerUserID string, memberCount uint32) *sdkws.GroupInfo {
 	return &sdkws.GroupInfo{
 		GroupID:                group.GroupID,
 		GroupName:              group.GroupName,
@@ -41,7 +42,10 @@ func (g *groupServer) groupDB2PB(group *model.Group, ownerUserID string, memberC
 	}
 }
 
-func (g *groupServer) groupMemberDB2PB(member *model.GroupMember, appMangerLevel int32) *sdkws.GroupMemberFullInfo {
+func (s *groupServer) groupMemberDB2PB(
+	member *relation.GroupMemberModel,
+	appMangerLevel int32,
+) *sdkws.GroupMemberFullInfo {
 	return &sdkws.GroupMemberFullInfo{
 		GroupID:        member.GroupID,
 		UserID:         member.UserID,
@@ -56,8 +60,4 @@ func (g *groupServer) groupMemberDB2PB(member *model.GroupMember, appMangerLevel
 		MuteEndTime:    member.MuteEndTime.UnixMilli(),
 		InviterUserID:  member.InviterUserID,
 	}
-}
-
-func (g *groupServer) groupMemberDB2PB2(member *model.GroupMember) *sdkws.GroupMemberFullInfo {
-	return g.groupMemberDB2PB(member, 0)
 }

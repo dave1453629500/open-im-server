@@ -14,7 +14,7 @@
 
 package msgprocessor
 
-import "github.com/openimsdk/protocol/constant"
+import "github.com/OpenIMSDK/protocol/constant"
 
 type (
 	Options    map[string]bool
@@ -37,7 +37,6 @@ func NewOptions(opts ...OptionsOpt) Options {
 	for _, opt := range opts {
 		opt(options)
 	}
-
 	return options
 }
 

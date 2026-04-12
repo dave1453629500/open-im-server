@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 )
 
@@ -53,10 +54,11 @@ type User struct {
 
 // UserRegisterRequest represents a request to register a user.
 type UserRegisterRequest struct {
-	Users []User `json:"users"`
+	Secret string `json:"secret"`
+	Users  []User `json:"users"`
 }
 
-/* func main() {
+func main() {
 	// Example usage of functions
 	token, err := GetUserToken("openIM123456")
 	if err != nil {
@@ -68,7 +70,7 @@ type UserRegisterRequest struct {
 	if err != nil {
 		log.Fatalf("Error registering user: %v", err)
 	}
-} */
+}
 
 // GetUserToken requests a user token from the API.
 func GetUserToken(userID string) (string, error) {
@@ -108,7 +110,8 @@ func RegisterUser(token, userID, nickname, faceURL string) error {
 		FaceURL:  faceURL,
 	}
 	reqBody := UserRegisterRequest{
-		Users: []User{user},
+		Secret: SecretKey,
+		Users:  []User{user},
 	}
 	reqBytes, err := json.Marshal(reqBody)
 	if err != nil {

@@ -15,97 +15,46 @@
 package prommetrics
 
 import (
-	"errors"
-	"fmt"
-	"net"
-	"net/http"
-
+	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	config2 "github.com/openimsdk/open-im-server/v3/pkg/common/config"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/ginprometheus"
 )
 
-const commonPath = "/metrics"
-
-var registry = &prometheusRegistry{prometheus.NewRegistry()}
-
-type prometheusRegistry struct {
-	*prometheus.Registry
+func NewGrpcPromObj(cusMetrics []prometheus.Collector) (*prometheus.Registry, *grpc_prometheus.ServerMetrics, error) {
+	////////////////////////////////////////////////////////
+	reg := prometheus.NewRegistry()
+	grpcMetrics := grpc_prometheus.NewServerMetrics()
+	grpcMetrics.EnableHandlingTimeHistogram()
+	cusMetrics = append(cusMetrics, grpcMetrics, collectors.NewGoCollector())
+	reg.MustRegister(cusMetrics...)
+	return reg, grpcMetrics, nil
 }
 
-func (x *prometheusRegistry) MustRegister(cs ...prometheus.Collector) {
-	for _, c := range cs {
-		if err := x.Registry.Register(c); err != nil {
-			if errors.As(err, &prometheus.AlreadyRegisteredError{}) {
-				continue
-			}
-			panic(err)
-		}
+func GetGrpcCusMetrics(registerName string) []prometheus.Collector {
+	switch registerName {
+	case config2.Config.RpcRegisterName.OpenImMessageGatewayName:
+		return []prometheus.Collector{OnlineUserGauge}
+	case config2.Config.RpcRegisterName.OpenImMsgName:
+		return []prometheus.Collector{SingleChatMsgProcessSuccessCounter, SingleChatMsgProcessFailedCounter, GroupChatMsgProcessSuccessCounter, GroupChatMsgProcessFailedCounter}
+	case "Transfer":
+		return []prometheus.Collector{MsgInsertRedisSuccessCounter, MsgInsertRedisFailedCounter, MsgInsertMongoSuccessCounter, MsgInsertMongoFailedCounter, SeqSetFailedCounter}
+	case config2.Config.RpcRegisterName.OpenImPushName:
+		return []prometheus.Collector{MsgOfflinePushFailedCounter}
+	case config2.Config.RpcRegisterName.OpenImAuthName:
+		return []prometheus.Collector{UserLoginCounter}
+	default:
+		return nil
 	}
 }
 
-func init() {
-	registry.MustRegister(
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		collectors.NewGoCollector(),
-	)
-}
-
-var (
-	baseCollector = []prometheus.Collector{
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		collectors.NewGoCollector(),
-	}
-)
-
-func Init(registry *prometheus.Registry, listener net.Listener, path string, handler http.Handler, cs ...prometheus.Collector) error {
-	registry.MustRegister(cs...)
-	srv := http.NewServeMux()
-	srv.Handle(path, handler)
-	return http.Serve(listener, srv)
-}
-
-func RegistryAll() {
-	RegistryApi()
-	RegistryAuth()
-	RegistryMsg()
-	RegistryMsgGateway()
-	RegistryPush()
-	RegistryUser()
-	RegistryRpc()
-	RegistryTransfer()
-}
-
-func Start(listener net.Listener) error {
-	srv := http.NewServeMux()
-	srv.Handle(commonPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	return http.Serve(listener, srv)
-}
-
-const (
-	APIKeyName             = "api"
-	MessageTransferKeyName = "message-transfer"
-)
-
-type Target struct {
-	Target string            `json:"target"`
-	Labels map[string]string `json:"labels"`
-}
-
-type RespTarget struct {
-	Targets []string          `json:"targets"`
-	Labels  map[string]string `json:"labels"`
-}
-
-func BuildDiscoveryKey(name string) string {
-	return fmt.Sprintf("%s/%s/%s", "openim", "prometheus_discovery", name)
-}
-
-func BuildDefaultTarget(host string, ip int) Target {
-	return Target{
-		Target: fmt.Sprintf("%s:%d", host, ip),
-		Labels: map[string]string{
-			"namespace": "default",
-		},
+func GetGinCusMetrics(name string) []*ginprometheus.Metric {
+	switch name {
+	case "Api":
+		return []*ginprometheus.Metric{ApiCustomCnt}
+	default:
+		return []*ginprometheus.Metric{ApiCustomCnt}
 	}
 }

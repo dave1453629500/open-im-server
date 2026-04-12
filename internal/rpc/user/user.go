@@ -17,204 +17,188 @@ package user
 import (
 	"context"
 	"errors"
+	"github.com/OpenIMSDK/tools/pagination"
 	"math/rand"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/openimsdk/open-im-server/v3/internal/rpc/relation"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/table/relation"
+
+	"github.com/OpenIMSDK/tools/tx"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/mgo"
+
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/protocol/sdkws"
+	"github.com/OpenIMSDK/tools/errs"
+	"github.com/OpenIMSDK/tools/log"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/unrelation"
+
+	registry "github.com/OpenIMSDK/tools/discoveryregistry"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/redis"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database/mgo"
-	tablerelation "github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
-	"github.com/openimsdk/open-im-server/v3/pkg/dbbuild"
-	"github.com/openimsdk/open-im-server/v3/pkg/localcache"
-	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/protocol/group"
-	friendpb "github.com/openimsdk/protocol/relation"
-	"github.com/openimsdk/protocol/sdkws"
-	pbuser "github.com/openimsdk/protocol/user"
-	"github.com/openimsdk/tools/db/pagination"
-	"github.com/openimsdk/tools/discovery"
-	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/utils/datautil"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/cache"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/controller"
+	tablerelation "github.com/openimsdk/open-im-server/v3/pkg/common/db/table/relation"
+	"github.com/openimsdk/open-im-server/v3/pkg/rpcclient"
+	"github.com/openimsdk/open-im-server/v3/pkg/rpcclient/notification"
+
+	pbuser "github.com/OpenIMSDK/protocol/user"
+	"github.com/OpenIMSDK/tools/utils"
 	"google.golang.org/grpc"
 )
 
 type userServer struct {
-	pbuser.UnimplementedUserServer
-	online                   cache.OnlineCache
-	db                       controller.UserDatabase
-	friendNotificationSender *relation.FriendNotificationSender
-	userNotificationSender   *UserNotificationSender
-	RegisterCenter           discovery.Conn
-	config                   *Config
-	webhookClient            *webhook.Client
-	groupClient              *rpcli.GroupClient
-	relationClient           *rpcli.RelationClient
+	controller.UserDatabase
+	friendNotificationSender *notification.FriendNotificationSender
+	userNotificationSender   *notification.UserNotificationSender
+	friendRpcClient          *rpcclient.FriendRpcClient
+	groupRpcClient           *rpcclient.GroupRpcClient
+	RegisterCenter           registry.SvcDiscoveryRegistry
 }
 
-type Config struct {
-	RpcConfig          config.User
-	RedisConfig        config.Redis
-	MongodbConfig      config.Mongo
-	KafkaConfig        config.Kafka
-	NotificationConfig config.Notification
-	Share              config.Share
-	WebhooksConfig     config.Webhooks
-	LocalCacheConfig   config.LocalCache
-	Discovery          config.Discovery
+func (s *userServer) ProcessUserCommandGetAll(ctx context.Context, req *pbuser.ProcessUserCommandGetAllReq) (*pbuser.ProcessUserCommandGetAllResp, error) {
+	//TODO implement me
+	panic("implement me")
 }
 
-func Start(ctx context.Context, config *Config, client discovery.Conn, server grpc.ServiceRegistrar) error {
-	dbb := dbbuild.NewBuilder(&config.MongodbConfig, &config.RedisConfig)
-	mgocli, err := dbb.Mongo(ctx)
+func Start(client registry.SvcDiscoveryRegistry, server *grpc.Server) error {
+	rdb, err := cache.NewRedis()
 	if err != nil {
 		return err
 	}
-	rdb, err := dbb.Redis(ctx)
+	mongo, err := unrelation.NewMongo()
 	if err != nil {
 		return err
 	}
-
-	users := make([]*tablerelation.User, 0)
-
-	for _, v := range config.Share.IMAdminUserID {
-		users = append(users, &tablerelation.User{UserID: v, Nickname: v, AppMangerLevel: constant.AppNotificationAdmin})
+	users := make([]*tablerelation.UserModel, 0)
+	if len(config.Config.Manager.UserID) != len(config.Config.Manager.Nickname) {
+		return errors.New("len(config.Config.Manager.AppManagerUid) != len(config.Config.Manager.Nickname)")
 	}
-	userDB, err := mgo.NewUserMongo(mgocli.GetDB())
+	for k, v := range config.Config.Manager.UserID {
+		users = append(users, &tablerelation.UserModel{UserID: v, Nickname: config.Config.Manager.Nickname[k], AppMangerLevel: constant.AppAdmin})
+	}
+	if len(config.Config.IMAdmin.UserID) != len(config.Config.IMAdmin.Nickname) {
+		return errors.New("len(config.Config.AppNotificationAdmin.AppManagerUid) != len(config.Config.AppNotificationAdmin.Nickname)")
+	}
+	for k, v := range config.Config.IMAdmin.UserID {
+		users = append(users, &tablerelation.UserModel{UserID: v, Nickname: config.Config.IMAdmin.Nickname[k], AppMangerLevel: constant.AppNotificationAdmin})
+	}
+	userDB, err := mgo.NewUserMongo(mongo.GetDatabase())
 	if err != nil {
 		return err
 	}
-	msgConn, err := client.GetConn(ctx, config.Discovery.RpcService.Msg)
-	if err != nil {
-		return err
-	}
-	groupConn, err := client.GetConn(ctx, config.Discovery.RpcService.Group)
-	if err != nil {
-		return err
-	}
-	friendConn, err := client.GetConn(ctx, config.Discovery.RpcService.Friend)
-	if err != nil {
-		return err
-	}
-	msgClient := rpcli.NewMsgClient(msgConn)
-	userCache := redis.NewUserCacheRedis(rdb, &config.LocalCacheConfig, userDB, redis.GetRocksCacheOptions())
-	database := controller.NewUserDatabase(userDB, userCache, mgocli.GetTx())
-	localcache.InitLocalCache(&config.LocalCacheConfig)
+	cache := cache.NewUserCacheRedis(rdb, userDB, cache.GetDefaultOpt())
+	userMongoDB := unrelation.NewUserMongoDriver(mongo.GetDatabase())
+	database := controller.NewUserDatabase(userDB, cache, tx.NewMongo(mongo.GetClient()), userMongoDB)
+	friendRpcClient := rpcclient.NewFriendRpcClient(client)
+	groupRpcClient := rpcclient.NewGroupRpcClient(client)
+	msgRpcClient := rpcclient.NewMessageRpcClient(client)
 	u := &userServer{
-		online:                   redis.NewUserOnline(rdb),
-		db:                       database,
+		UserDatabase:             database,
 		RegisterCenter:           client,
-		friendNotificationSender: relation.NewFriendNotificationSender(&config.NotificationConfig, msgClient, relation.WithDBFunc(database.FindWithError)),
-		userNotificationSender:   NewUserNotificationSender(config, msgClient, WithUserFunc(database.FindWithError)),
-		config:                   config,
-		webhookClient:            webhook.NewWebhookClient(config.WebhooksConfig.URL),
-
-		groupClient:    rpcli.NewGroupClient(groupConn),
-		relationClient: rpcli.NewRelationClient(friendConn),
+		friendRpcClient:          &friendRpcClient,
+		groupRpcClient:           &groupRpcClient,
+		friendNotificationSender: notification.NewFriendNotificationSender(&msgRpcClient, notification.WithDBFunc(database.FindWithError)),
+		userNotificationSender:   notification.NewUserNotificationSender(&msgRpcClient, notification.WithUserFunc(database.FindWithError)),
 	}
 	pbuser.RegisterUserServer(server, u)
-	return u.db.InitOnce(context.Background(), users)
+	return u.UserDatabase.InitOnce(context.Background(), users)
 }
 
 func (s *userServer) GetDesignateUsers(ctx context.Context, req *pbuser.GetDesignateUsersReq) (resp *pbuser.GetDesignateUsersResp, err error) {
 	resp = &pbuser.GetDesignateUsersResp{}
-	users, err := s.db.Find(ctx, req.UserIDs)
+	users, err := s.FindWithError(ctx, req.UserIDs)
 	if err != nil {
 		return nil, err
 	}
-
 	resp.UsersInfo = convert.UsersDB2Pb(users)
+	if err != nil {
+		return nil, err
+	}
 	return resp, nil
 }
 
-// deprecated:
-// UpdateUserInfo
 func (s *userServer) UpdateUserInfo(ctx context.Context, req *pbuser.UpdateUserInfoReq) (resp *pbuser.UpdateUserInfoResp, err error) {
 	resp = &pbuser.UpdateUserInfoResp{}
-	err = authverify.CheckAccessV3(ctx, req.UserInfo.UserID, s.config.Share.IMAdminUserID)
+	err = authverify.CheckAccessV3(ctx, req.UserInfo.UserID)
 	if err != nil {
 		return nil, err
 	}
-
-	if err := s.webhookBeforeUpdateUserInfo(ctx, &s.config.WebhooksConfig.BeforeUpdateUserInfo, req); err != nil {
+	if err := CallbackBeforeUpdateUserInfo(ctx, req); err != nil {
 		return nil, err
 	}
 	data := convert.UserPb2DBMap(req.UserInfo)
-	oldUser, err := s.db.GetUserByID(ctx, req.UserInfo.UserID)
+	if err := s.UpdateByMap(ctx, req.UserInfo.UserID, data); err != nil {
+		return nil, err
+	}
+	_ = s.friendNotificationSender.UserInfoUpdatedNotification(ctx, req.UserInfo.UserID)
+	friends, err := s.friendRpcClient.GetFriendIDs(ctx, req.UserInfo.UserID)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.db.UpdateByMap(ctx, req.UserInfo.UserID, data); err != nil {
+	if req.UserInfo.Nickname != "" || req.UserInfo.FaceURL != "" {
+		if err := s.groupRpcClient.NotificationUserInfoUpdate(ctx, req.UserInfo.UserID); err != nil {
+			log.ZError(ctx, "NotificationUserInfoUpdate", err)
+		}
+	}
+	for _, friendID := range friends {
+		s.friendNotificationSender.FriendInfoUpdatedNotification(ctx, req.UserInfo.UserID, friendID)
+	}
+	if err := CallbackAfterUpdateUserInfo(ctx, req); err != nil {
 		return nil, err
 	}
-	s.friendNotificationSender.UserInfoUpdatedNotification(ctx, req.UserInfo.UserID)
-
-	s.webhookAfterUpdateUserInfo(ctx, &s.config.WebhooksConfig.AfterUpdateUserInfo, req)
-	if err = s.NotificationUserInfoUpdate(ctx, req.UserInfo.UserID, oldUser); err != nil {
-		return nil, err
+	if err := s.groupRpcClient.NotificationUserInfoUpdate(ctx, req.UserInfo.UserID); err != nil {
+		log.ZError(ctx, "NotificationUserInfoUpdate", err, "userID", req.UserInfo.UserID)
 	}
 	return resp, nil
 }
-
 func (s *userServer) UpdateUserInfoEx(ctx context.Context, req *pbuser.UpdateUserInfoExReq) (resp *pbuser.UpdateUserInfoExResp, err error) {
 	resp = &pbuser.UpdateUserInfoExResp{}
-	err = authverify.CheckAccessV3(ctx, req.UserInfo.UserID, s.config.Share.IMAdminUserID)
+	err = authverify.CheckAccessV3(ctx, req.UserInfo.UserID)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = s.webhookBeforeUpdateUserInfoEx(ctx, &s.config.WebhooksConfig.BeforeUpdateUserInfoEx, req); err != nil {
+	if err = CallbackBeforeUpdateUserInfoEx(ctx, req); err != nil {
 		return nil, err
 	}
-
-	oldUser, err := s.db.GetUserByID(ctx, req.UserInfo.UserID)
-	if err != nil {
-		return nil, err
-	}
-
 	data := convert.UserPb2DBMapEx(req.UserInfo)
-	if err = s.db.UpdateByMap(ctx, req.UserInfo.UserID, data); err != nil {
+	if err = s.UpdateByMap(ctx, req.UserInfo.UserID, data); err != nil {
 		return nil, err
 	}
-
-	s.friendNotificationSender.UserInfoUpdatedNotification(ctx, req.UserInfo.UserID)
-	//friends, err := s.friendRpcClient.GetFriendIDs(ctx, req.UserInfo.UserID)
-	//if err != nil {
-	//	return nil, err
-	//}
-	//if req.UserInfo.Nickname != nil || req.UserInfo.FaceURL != nil {
-	//	if err := s.NotificationUserInfoUpdate(ctx, req.UserInfo.UserID); err != nil {
-	//		return nil, err
-	//	}
-	//}
-	//for _, friendID := range friends {
-	//	s.friendNotificationSender.FriendInfoUpdatedNotification(ctx, req.UserInfo.UserID, friendID)
-	//}
-	s.webhookAfterUpdateUserInfoEx(ctx, &s.config.WebhooksConfig.AfterUpdateUserInfoEx, req)
-	if err := s.NotificationUserInfoUpdate(ctx, req.UserInfo.UserID, oldUser); err != nil {
+	_ = s.friendNotificationSender.UserInfoUpdatedNotification(ctx, req.UserInfo.UserID)
+	friends, err := s.friendRpcClient.GetFriendIDs(ctx, req.UserInfo.UserID)
+	if err != nil {
 		return nil, err
 	}
-
+	if req.UserInfo.Nickname != nil || req.UserInfo.FaceURL != nil {
+		if err := s.groupRpcClient.NotificationUserInfoUpdate(ctx, req.UserInfo.UserID); err != nil {
+			log.ZError(ctx, "NotificationUserInfoUpdate", err)
+		}
+	}
+	for _, friendID := range friends {
+		s.friendNotificationSender.FriendInfoUpdatedNotification(ctx, req.UserInfo.UserID, friendID)
+	}
+	if err := CallbackAfterUpdateUserInfoEx(ctx, req); err != nil {
+		return nil, err
+	}
+	if err := s.groupRpcClient.NotificationUserInfoUpdate(ctx, req.UserInfo.UserID); err != nil {
+		log.ZError(ctx, "NotificationUserInfoUpdate", err, "userID", req.UserInfo.UserID)
+	}
 	return resp, nil
 }
 func (s *userServer) SetGlobalRecvMessageOpt(ctx context.Context, req *pbuser.SetGlobalRecvMessageOptReq) (resp *pbuser.SetGlobalRecvMessageOptResp, err error) {
 	resp = &pbuser.SetGlobalRecvMessageOptResp{}
-	if _, err := s.db.FindWithError(ctx, []string{req.UserID}); err != nil {
+	if _, err := s.FindWithError(ctx, []string{req.UserID}); err != nil {
 		return nil, err
 	}
 	m := make(map[string]any, 1)
 	m["global_recv_msg_opt"] = req.GlobalRecvMsgOpt
-	if err := s.db.UpdateByMap(ctx, req.UserID, m); err != nil {
+	if err := s.UpdateByMap(ctx, req.UserID, m); err != nil {
 		return nil, err
 	}
 	s.friendNotificationSender.UserInfoUpdatedNotification(ctx, req.UserID)
@@ -223,14 +207,14 @@ func (s *userServer) SetGlobalRecvMessageOpt(ctx context.Context, req *pbuser.Se
 
 func (s *userServer) AccountCheck(ctx context.Context, req *pbuser.AccountCheckReq) (resp *pbuser.AccountCheckResp, err error) {
 	resp = &pbuser.AccountCheckResp{}
-	if datautil.Duplicate(req.CheckUserIDs) {
-		return nil, errs.ErrArgs.WrapMsg("userID repeated")
+	if utils.Duplicate(req.CheckUserIDs) {
+		return nil, errs.ErrArgs.Wrap("userID repeated")
 	}
-	err = authverify.CheckAdmin(ctx, s.config.Share.IMAdminUserID)
+	err = authverify.CheckAdmin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	users, err := s.db.Find(ctx, req.CheckUserIDs)
+	users, err := s.Find(ctx, req.CheckUserIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -251,60 +235,49 @@ func (s *userServer) AccountCheck(ctx context.Context, req *pbuser.AccountCheckR
 }
 
 func (s *userServer) GetPaginationUsers(ctx context.Context, req *pbuser.GetPaginationUsersReq) (resp *pbuser.GetPaginationUsersResp, err error) {
-	if req.UserID == "" && req.NickName == "" {
-		total, users, err := s.db.PageFindUser(ctx, constant.IMOrdinaryUser, constant.AppOrdinaryUsers, req.Pagination)
-		if err != nil {
-			return nil, err
-		}
-		return &pbuser.GetPaginationUsersResp{Total: int32(total), Users: convert.UsersDB2Pb(users)}, err
-	} else {
-		total, users, err := s.db.PageFindUserWithKeyword(ctx, constant.IMOrdinaryUser, constant.AppOrdinaryUsers, req.UserID, req.NickName, req.Pagination)
-		if err != nil {
-			return nil, err
-		}
-		return &pbuser.GetPaginationUsersResp{Total: int32(total), Users: convert.UsersDB2Pb(users)}, err
-
+	total, users, err := s.PageFindUser(ctx, constant.IMOrdinaryUser, req.Pagination)
+	if err != nil {
+		return nil, err
 	}
-
+	return &pbuser.GetPaginationUsersResp{Total: int32(total), Users: convert.UsersDB2Pb(users)}, err
 }
 
 func (s *userServer) UserRegister(ctx context.Context, req *pbuser.UserRegisterReq) (resp *pbuser.UserRegisterResp, err error) {
 	resp = &pbuser.UserRegisterResp{}
 	if len(req.Users) == 0 {
-		return nil, errs.ErrArgs.WrapMsg("users is empty")
+		return nil, errs.ErrArgs.Wrap("users is empty")
 	}
-
-	if err = authverify.CheckAdmin(ctx, s.config.Share.IMAdminUserID); err != nil {
-		return nil, err
+	if req.Secret != config.Config.Secret {
+		log.ZDebug(ctx, "UserRegister", config.Config.Secret, req.Secret)
+		return nil, errs.ErrNoPermission.Wrap("secret invalid")
 	}
-
-	if datautil.DuplicateAny(req.Users, func(e *sdkws.UserInfo) string { return e.UserID }) {
-		return nil, errs.ErrArgs.WrapMsg("userID repeated")
+	if utils.DuplicateAny(req.Users, func(e *sdkws.UserInfo) string { return e.UserID }) {
+		return nil, errs.ErrArgs.Wrap("userID repeated")
 	}
 	userIDs := make([]string, 0)
 	for _, user := range req.Users {
 		if user.UserID == "" {
-			return nil, errs.ErrArgs.WrapMsg("userID is empty")
+			return nil, errs.ErrArgs.Wrap("userID is empty")
 		}
 		if strings.Contains(user.UserID, ":") {
-			return nil, errs.ErrArgs.WrapMsg("userID contains ':' is invalid userID")
+			return nil, errs.ErrArgs.Wrap("userID contains ':' is invalid userID")
 		}
 		userIDs = append(userIDs, user.UserID)
 	}
-	exist, err := s.db.IsExist(ctx, userIDs)
+	exist, err := s.IsExist(ctx, userIDs)
 	if err != nil {
 		return nil, err
 	}
 	if exist {
-		return nil, servererrs.ErrRegisteredAlready.WrapMsg("userID registered already")
+		return nil, errs.ErrRegisteredAlready.Wrap("userID registered already")
 	}
-	if err := s.webhookBeforeUserRegister(ctx, &s.config.WebhooksConfig.BeforeUserRegister, req); err != nil {
+	if err := CallbackBeforeUserRegister(ctx, req); err != nil {
 		return nil, err
 	}
 	now := time.Now()
-	users := make([]*tablerelation.User, 0, len(req.Users))
+	users := make([]*tablerelation.UserModel, 0, len(req.Users))
 	for _, user := range req.Users {
-		users = append(users, &tablerelation.User{
+		users = append(users, &tablerelation.UserModel{
 			UserID:           user.UserID,
 			Nickname:         user.Nickname,
 			FaceURL:          user.FaceURL,
@@ -314,18 +287,18 @@ func (s *userServer) UserRegister(ctx context.Context, req *pbuser.UserRegisterR
 			GlobalRecvMsgOpt: user.GlobalRecvMsgOpt,
 		})
 	}
-	if err := s.db.Create(ctx, users); err != nil {
+	if err := s.Create(ctx, users); err != nil {
 		return nil, err
 	}
 
-	prommetrics.UserRegisterCounter.Add(float64(len(users)))
-
-	s.webhookAfterUserRegister(ctx, &s.config.WebhooksConfig.AfterUserRegister, req)
+	if err := CallbackAfterUserRegister(ctx, req); err != nil {
+		return nil, err
+	}
 	return resp, nil
 }
 
 func (s *userServer) GetGlobalRecvMessageOpt(ctx context.Context, req *pbuser.GetGlobalRecvMessageOptReq) (resp *pbuser.GetGlobalRecvMessageOptResp, err error) {
-	user, err := s.db.FindWithError(ctx, []string{req.UserID})
+	user, err := s.FindWithError(ctx, []string{req.UserID})
 	if err != nil {
 		return nil, err
 	}
@@ -334,159 +307,120 @@ func (s *userServer) GetGlobalRecvMessageOpt(ctx context.Context, req *pbuser.Ge
 
 // GetAllUserID Get user account by page.
 func (s *userServer) GetAllUserID(ctx context.Context, req *pbuser.GetAllUserIDReq) (resp *pbuser.GetAllUserIDResp, err error) {
-	total, userIDs, err := s.db.GetAllUserID(ctx, req.Pagination)
+	total, userIDs, err := s.UserDatabase.GetAllUserID(ctx, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
 	return &pbuser.GetAllUserIDResp{Total: int32(total), UserIDs: userIDs}, nil
 }
 
-// ProcessUserCommandAdd user general function add.
-func (s *userServer) ProcessUserCommandAdd(ctx context.Context, req *pbuser.ProcessUserCommandAddReq) (*pbuser.ProcessUserCommandAddResp, error) {
-	err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID)
+// SubscribeOrCancelUsersStatus Subscribe online or cancel online users.
+func (s *userServer) SubscribeOrCancelUsersStatus(ctx context.Context, req *pbuser.SubscribeOrCancelUsersStatusReq) (resp *pbuser.SubscribeOrCancelUsersStatusResp, err error) {
+	if req.Genre == constant.SubscriberUser {
+		err = s.UserDatabase.SubscribeUsersStatus(ctx, req.UserID, req.UserIDs)
+		if err != nil {
+			return nil, err
+		}
+		var status []*pbuser.OnlineStatus
+		status, err = s.UserDatabase.GetUserStatus(ctx, req.UserIDs)
+		if err != nil {
+			return nil, err
+		}
+		return &pbuser.SubscribeOrCancelUsersStatusResp{StatusList: status}, nil
+	} else if req.Genre == constant.Unsubscribe {
+		err = s.UserDatabase.UnsubscribeUsersStatus(ctx, req.UserID, req.UserIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &pbuser.SubscribeOrCancelUsersStatusResp{}, nil
+}
+
+// GetUserStatus Get the online status of the user.
+func (s *userServer) GetUserStatus(ctx context.Context, req *pbuser.GetUserStatusReq) (resp *pbuser.GetUserStatusResp,
+	err error) {
+	onlineStatusList, err := s.UserDatabase.GetUserStatus(ctx, req.UserIDs)
 	if err != nil {
 		return nil, err
+	}
+	return &pbuser.GetUserStatusResp{StatusList: onlineStatusList}, nil
+}
+
+// SetUserStatus Synchronize user's online status.
+func (s *userServer) SetUserStatus(ctx context.Context, req *pbuser.SetUserStatusReq) (resp *pbuser.SetUserStatusResp,
+	err error) {
+	err = s.UserDatabase.SetUserStatus(ctx, req.UserID, req.Status, req.PlatformID)
+	if err != nil {
+		return nil, err
+	}
+	list, err := s.UserDatabase.GetSubscribedList(ctx, req.UserID)
+	if err != nil {
+		return nil, err
+	}
+	for _, userID := range list {
+		tips := &sdkws.UserStatusChangeTips{
+			FromUserID: req.UserID,
+			ToUserID:   userID,
+			Status:     req.Status,
+			PlatformID: req.PlatformID,
+		}
+		s.userNotificationSender.UserStatusChangeNotification(ctx, tips)
 	}
 
-	var value string
-	if req.Value != nil {
-		value = req.Value.Value
-	}
-	var ex string
-	if req.Ex != nil {
-		value = req.Ex.Value
-	}
-	// Assuming you have a method in s.storage to add a user command
-	err = s.db.AddUserCommand(ctx, req.UserID, req.Type, req.Uuid, value, ex)
+	return &pbuser.SetUserStatusResp{}, nil
+}
+
+// GetSubscribeUsersStatus Get the online status of subscribers.
+func (s *userServer) GetSubscribeUsersStatus(ctx context.Context,
+	req *pbuser.GetSubscribeUsersStatusReq) (*pbuser.GetSubscribeUsersStatusResp, error) {
+	userList, err := s.UserDatabase.GetAllSubscribeList(ctx, req.UserID)
 	if err != nil {
 		return nil, err
 	}
-	tips := &sdkws.UserCommandAddTips{
-		FromUserID: req.UserID,
-		ToUserID:   req.UserID,
+	onlineStatusList, err := s.UserDatabase.GetUserStatus(ctx, userList)
+	if err != nil {
+		return nil, err
 	}
-	s.userNotificationSender.UserCommandAddNotification(ctx, tips)
+	return &pbuser.GetSubscribeUsersStatusResp{StatusList: onlineStatusList}, nil
+}
+
+// ProcessUserCommandAdd user general function add
+func (s *userServer) ProcessUserCommandAdd(ctx context.Context, req *pbuser.ProcessUserCommandAddReq) (*pbuser.ProcessUserCommandAddResp, error) {
+
 	return &pbuser.ProcessUserCommandAddResp{}, nil
 }
 
-// ProcessUserCommandDelete user general function delete.
+// ProcessUserCommandDelete user general function delete
 func (s *userServer) ProcessUserCommandDelete(ctx context.Context, req *pbuser.ProcessUserCommandDeleteReq) (*pbuser.ProcessUserCommandDeleteResp, error) {
-	err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID)
+	// Assuming you have a method in s.UserDatabase to delete a user command
+	err := s.UserDatabase.DeleteUserCommand(ctx, req.UserID, req.Type, req.Uuid)
 	if err != nil {
 		return nil, err
 	}
-
-	err = s.db.DeleteUserCommand(ctx, req.UserID, req.Type, req.Uuid)
-	if err != nil {
-		return nil, err
-	}
-	tips := &sdkws.UserCommandDeleteTips{
-		FromUserID: req.UserID,
-		ToUserID:   req.UserID,
-	}
-	s.userNotificationSender.UserCommandDeleteNotification(ctx, tips)
 	return &pbuser.ProcessUserCommandDeleteResp{}, nil
 }
 
-// ProcessUserCommandUpdate user general function update.
+// ProcessUserCommandUpdate user general function update
 func (s *userServer) ProcessUserCommandUpdate(ctx context.Context, req *pbuser.ProcessUserCommandUpdateReq) (*pbuser.ProcessUserCommandUpdateResp, error) {
-	err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID)
-	if err != nil {
-		return nil, err
-	}
-	val := make(map[string]any)
 
-	// Map fields from eax to val
-	if req.Value != nil {
-		val["value"] = req.Value.Value
-	}
-	if req.Ex != nil {
-		val["ex"] = req.Ex.Value
-	}
-
-	// Assuming you have a method in s.storage to update a user command
-	err = s.db.UpdateUserCommand(ctx, req.UserID, req.Type, req.Uuid, val)
-	if err != nil {
-		return nil, err
-	}
-	tips := &sdkws.UserCommandUpdateTips{
-		FromUserID: req.UserID,
-		ToUserID:   req.UserID,
-	}
-	s.userNotificationSender.UserCommandUpdateNotification(ctx, tips)
 	return &pbuser.ProcessUserCommandUpdateResp{}, nil
 }
 
 func (s *userServer) ProcessUserCommandGet(ctx context.Context, req *pbuser.ProcessUserCommandGetReq) (*pbuser.ProcessUserCommandGetResp, error) {
 
-	err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID)
-	if err != nil {
-		return nil, err
-	}
-	// Fetch user commands from the database
-	commands, err := s.db.GetUserCommands(ctx, req.UserID, req.Type)
-	if err != nil {
-		return nil, err
-	}
-
-	// Initialize commandInfoSlice as an empty slice
-	commandInfoSlice := make([]*pbuser.CommandInfoResp, 0, len(commands))
-
-	for _, command := range commands {
-		// No need to use index since command is already a pointer
-		commandInfoSlice = append(commandInfoSlice, &pbuser.CommandInfoResp{
-			Type:       command.Type,
-			Uuid:       command.Uuid,
-			Value:      command.Value,
-			CreateTime: command.CreateTime,
-			Ex:         command.Ex,
-		})
-	}
-
 	// Return the response with the slice
-	return &pbuser.ProcessUserCommandGetResp{CommandResp: commandInfoSlice}, nil
-}
-
-func (s *userServer) ProcessUserCommandGetAll(ctx context.Context, req *pbuser.ProcessUserCommandGetAllReq) (*pbuser.ProcessUserCommandGetAllResp, error) {
-	err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID)
-	if err != nil {
-		return nil, err
-	}
-	// Fetch user commands from the database
-	commands, err := s.db.GetAllUserCommands(ctx, req.UserID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Initialize commandInfoSlice as an empty slice
-	commandInfoSlice := make([]*pbuser.AllCommandInfoResp, 0, len(commands))
-
-	for _, command := range commands {
-		// No need to use index since command is already a pointer
-		commandInfoSlice = append(commandInfoSlice, &pbuser.AllCommandInfoResp{
-			Type:       command.Type,
-			Uuid:       command.Uuid,
-			Value:      command.Value,
-			CreateTime: command.CreateTime,
-			Ex:         command.Ex,
-		})
-	}
-
-	// Return the response with the slice
-	return &pbuser.ProcessUserCommandGetAllResp{CommandResp: commandInfoSlice}, nil
+	return &pbuser.ProcessUserCommandGetResp{}, nil
 }
 
 func (s *userServer) AddNotificationAccount(ctx context.Context, req *pbuser.AddNotificationAccountReq) (*pbuser.AddNotificationAccountResp, error) {
-	if err := authverify.CheckAdmin(ctx, s.config.Share.IMAdminUserID); err != nil {
+	if err := authverify.CheckIMAdmin(ctx); err != nil {
 		return nil, err
 	}
-	if req.AppMangerLevel < constant.AppNotificationAdmin {
-		return nil, errs.ErrArgs.WithDetail("app level not supported")
-	}
+
 	if req.UserID == "" {
 		for i := 0; i < 20; i++ {
 			userId := s.genUserID()
-			_, err := s.db.FindWithError(ctx, []string{userId})
+			_, err := s.UserDatabase.FindWithError(ctx, []string{userId})
 			if err == nil {
 				continue
 			}
@@ -494,40 +428,34 @@ func (s *userServer) AddNotificationAccount(ctx context.Context, req *pbuser.Add
 			break
 		}
 		if req.UserID == "" {
-			return nil, errs.ErrInternalServer.WrapMsg("gen user id failed")
-		}
-	} else {
-		_, err := s.db.FindWithError(ctx, []string{req.UserID})
-		if err == nil {
-			return nil, errs.ErrArgs.WrapMsg("userID is used")
+			return nil, errs.ErrInternalServer.Wrap("gen user id failed")
 		}
 	}
 
-	user := &tablerelation.User{
+	user := &tablerelation.UserModel{
 		UserID:         req.UserID,
 		Nickname:       req.NickName,
 		FaceURL:        req.FaceURL,
 		CreateTime:     time.Now(),
-		AppMangerLevel: req.AppMangerLevel,
+		AppMangerLevel: constant.AppNotificationAdmin,
 	}
-	if err := s.db.Create(ctx, []*tablerelation.User{user}); err != nil {
+	if err := s.UserDatabase.Create(ctx, []*tablerelation.UserModel{user}); err != nil {
 		return nil, err
 	}
 
 	return &pbuser.AddNotificationAccountResp{
-		UserID:         req.UserID,
-		NickName:       req.NickName,
-		FaceURL:        req.FaceURL,
-		AppMangerLevel: req.AppMangerLevel,
+		UserID:   req.UserID,
+		NickName: req.NickName,
+		FaceURL:  req.FaceURL,
 	}, nil
 }
 
 func (s *userServer) UpdateNotificationAccountInfo(ctx context.Context, req *pbuser.UpdateNotificationAccountInfoReq) (*pbuser.UpdateNotificationAccountInfoResp, error) {
-	if err := authverify.CheckAdmin(ctx, s.config.Share.IMAdminUserID); err != nil {
+	if err := authverify.CheckIMAdmin(ctx); err != nil {
 		return nil, err
 	}
 
-	if _, err := s.db.FindWithError(ctx, []string{req.UserID}); err != nil {
+	if _, err := s.UserDatabase.FindWithError(ctx, []string{req.UserID}); err != nil {
 		return nil, errs.ErrArgs.Wrap()
 	}
 
@@ -541,7 +469,7 @@ func (s *userServer) UpdateNotificationAccountInfo(ctx context.Context, req *pbu
 		user["face_url"] = req.FaceURL
 	}
 
-	if err := s.db.UpdateByMap(ctx, req.UserID, user); err != nil {
+	if err := s.UserDatabase.UpdateByMap(ctx, req.UserID, user); err != nil {
 		return nil, err
 	}
 
@@ -549,72 +477,53 @@ func (s *userServer) UpdateNotificationAccountInfo(ctx context.Context, req *pbu
 }
 
 func (s *userServer) SearchNotificationAccount(ctx context.Context, req *pbuser.SearchNotificationAccountReq) (*pbuser.SearchNotificationAccountResp, error) {
-	// Check if user is an admin
-	if err := authverify.CheckAdmin(ctx, s.config.Share.IMAdminUserID); err != nil {
+	if err := authverify.CheckIMAdmin(ctx); err != nil {
 		return nil, err
 	}
 
-	var users []*tablerelation.User
+	var users []*relation.UserModel
 	var err error
-
-	// If a keyword is provided in the request
 	if req.Keyword != "" {
-		// Find users by keyword
-		users, err = s.db.Find(ctx, []string{req.Keyword})
+		users, err = s.UserDatabase.Find(ctx, []string{req.Keyword})
 		if err != nil {
 			return nil, err
 		}
-
-		// Convert users to response format
-		resp := s.userModelToResp(users, req.Pagination, req.AppManagerLevel)
+		resp := s.userModelToResp(users, req.Pagination)
 		if resp.Total != 0 {
 			return resp, nil
 		}
-
-		// Find users by nickname if no users found by keyword
-		users, err = s.db.FindByNickname(ctx, req.Keyword)
+		users, err = s.UserDatabase.FindByNickname(ctx, req.Keyword)
 		if err != nil {
 			return nil, err
 		}
-		resp = s.userModelToResp(users, req.Pagination, req.AppManagerLevel)
+		resp = s.userModelToResp(users, req.Pagination)
+		return resp, nil
+
 		return resp, nil
 	}
 
-	// If no keyword, find users with notification settings
-	if req.AppManagerLevel != nil {
-		users, err = s.db.FindNotification(ctx, int64(*req.AppManagerLevel))
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		users, err = s.db.FindSystemAccount(ctx)
-		if err != nil {
-			return nil, err
-		}
+	users, err = s.UserDatabase.FindNotification(ctx, constant.AppNotificationAdmin)
+	if err != nil {
+		return nil, err
 	}
 
-	resp := s.userModelToResp(users, req.Pagination, req.AppManagerLevel)
+	resp := s.userModelToResp(users, req.Pagination)
 	return resp, nil
 }
 
 func (s *userServer) GetNotificationAccount(ctx context.Context, req *pbuser.GetNotificationAccountReq) (*pbuser.GetNotificationAccountResp, error) {
 	if req.UserID == "" {
-		return nil, errs.ErrArgs.WrapMsg("userID is empty")
+		return nil, errs.ErrArgs.Wrap("userID is empty")
 	}
-	user, err := s.db.GetUserByID(ctx, req.UserID)
+	user, err := s.UserDatabase.GetUserByID(ctx, req.UserID)
 	if err != nil {
-		return nil, servererrs.ErrUserIDNotFound.Wrap()
+		return nil, errs.ErrUserIDNotFound.Wrap()
 	}
-	if user.AppMangerLevel == constant.AppAdmin || user.AppMangerLevel >= constant.AppNotificationAdmin {
-		return &pbuser.GetNotificationAccountResp{Account: &pbuser.NotificationAccountInfo{
-			UserID:         user.UserID,
-			FaceURL:        user.FaceURL,
-			NickName:       user.Nickname,
-			AppMangerLevel: user.AppMangerLevel,
-		}}, nil
+	if user.AppMangerLevel == constant.AppAdmin || user.AppMangerLevel == constant.AppNotificationAdmin {
+		return &pbuser.GetNotificationAccountResp{}, nil
 	}
 
-	return nil, errs.ErrNoPermission.WrapMsg("notification messages cannot be sent for this ID")
+	return nil, errs.ErrNoPermission.Wrap("notification messages cannot be sent for this ID")
 }
 
 func (s *userServer) genUserID() string {
@@ -632,70 +541,22 @@ func (s *userServer) genUserID() string {
 	return string(data)
 }
 
-func (s *userServer) userModelToResp(users []*tablerelation.User, pagination pagination.Pagination, appManagerLevel *int32) *pbuser.SearchNotificationAccountResp {
+func (s *userServer) userModelToResp(users []*relation.UserModel, pagination pagination.Pagination) *pbuser.SearchNotificationAccountResp {
 	accounts := make([]*pbuser.NotificationAccountInfo, 0)
 	var total int64
 	for _, v := range users {
-		if v.AppMangerLevel >= constant.AppNotificationAdmin && !datautil.Contain(v.UserID, s.config.Share.IMAdminUserID...) {
-			if appManagerLevel != nil {
-				if v.AppMangerLevel != *appManagerLevel {
-					continue
-				}
-			}
+		if v.AppMangerLevel == constant.AppNotificationAdmin && !utils.IsContain(v.UserID, config.Config.IMAdmin.UserID) {
 			temp := &pbuser.NotificationAccountInfo{
-				UserID:         v.UserID,
-				FaceURL:        v.FaceURL,
-				NickName:       v.Nickname,
-				AppMangerLevel: v.AppMangerLevel,
+				UserID:   v.UserID,
+				FaceURL:  v.FaceURL,
+				NickName: v.Nickname,
 			}
 			accounts = append(accounts, temp)
 			total += 1
 		}
 	}
 
-	notificationAccounts := datautil.Paginate(accounts, int(pagination.GetPageNumber()), int(pagination.GetShowNumber()))
+	notificationAccounts := utils.Paginate(accounts, int(pagination.GetPageNumber()), int(pagination.GetShowNumber()))
 
 	return &pbuser.SearchNotificationAccountResp{Total: total, NotificationAccounts: notificationAccounts}
-}
-
-func (s *userServer) NotificationUserInfoUpdate(ctx context.Context, userID string, oldUser *tablerelation.User) error {
-	user, err := s.db.GetUserByID(ctx, userID)
-	if err != nil {
-		return err
-	}
-	if user.Nickname == oldUser.Nickname && user.FaceURL == oldUser.FaceURL {
-		return nil
-	}
-	oldUserInfo := convert.UserDB2Pb(oldUser)
-	newUserInfo := convert.UserDB2Pb(user)
-	var wg sync.WaitGroup
-	var es [2]error
-	wg.Add(len(es))
-	go func() {
-		defer wg.Done()
-		_, es[0] = s.groupClient.NotificationUserInfoUpdate(ctx, &group.NotificationUserInfoUpdateReq{
-			UserID:      userID,
-			OldUserInfo: oldUserInfo,
-			NewUserInfo: newUserInfo,
-		})
-	}()
-
-	go func() {
-		defer wg.Done()
-		_, es[1] = s.relationClient.NotificationUserInfoUpdate(ctx, &friendpb.NotificationUserInfoUpdateReq{
-			UserID:      userID,
-			OldUserInfo: oldUserInfo,
-			NewUserInfo: newUserInfo,
-		})
-	}()
-	wg.Wait()
-	return errors.Join(es[:]...)
-}
-
-func (s *userServer) SortQuery(ctx context.Context, req *pbuser.SortQueryReq) (*pbuser.SortQueryResp, error) {
-	users, err := s.db.SortQuery(ctx, req.UserIDName, req.Asc)
-	if err != nil {
-		return nil, err
-	}
-	return &pbuser.SortQueryResp{Users: convert.UsersDB2Pb(users)}, nil
 }

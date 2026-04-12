@@ -1,52 +1,51 @@
+// Copyright © 2023 OpenIM. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package cmd
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discovery"
-	disetcd "github.com/openimsdk/open-im-server/v3/pkg/common/discovery/etcd"
-	"github.com/openimsdk/open-im-server/v3/version"
-	"github.com/openimsdk/tools/discovery/etcd"
-	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/log"
+	config2 "github.com/openimsdk/open-im-server/v3/pkg/common/config"
+
 	"github.com/spf13/cobra"
-	clientv3 "go.etcd.io/etcd/client/v3"
+	_ "go.uber.org/automaxprocs"
+
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/tools/log"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 )
 
+type RootCmdPt interface {
+	GetPortFromConfig(portType string) int
+}
 type RootCmd struct {
 	Command        cobra.Command
-	processName    string
+	Name           string
 	port           int
 	prometheusPort int
-	log            config.Log
-	index          int
-	configPath     string
-	etcdClient     *clientv3.Client
-}
-
-func (r *RootCmd) ConfigPath() string {
-	return r.configPath
-}
-
-func (r *RootCmd) Index() int {
-	return r.index
-}
-
-func (r *RootCmd) Port() int {
-	return r.port
+	cmdItf         RootCmdPt
 }
 
 type CmdOpts struct {
 	loggerPrefixName string
-	configMap        map[string]any
 }
 
 func WithCronTaskLogName() func(*CmdOpts) {
 	return func(opts *CmdOpts) {
-		opts.loggerPrefixName = "openim-crontask"
+		opts.loggerPrefixName = "openim.crontask.log.all"
 	}
 }
 
@@ -55,144 +54,41 @@ func WithLogName(logName string) func(*CmdOpts) {
 		opts.loggerPrefixName = logName
 	}
 }
-func WithConfigMap(configMap map[string]any) func(*CmdOpts) {
-	return func(opts *CmdOpts) {
-		opts.configMap = configMap
-	}
-}
 
-func NewRootCmd(processName string, opts ...func(*CmdOpts)) *RootCmd {
-	rootCmd := &RootCmd{processName: processName}
+func NewRootCmd(name string, opts ...func(*CmdOpts)) *RootCmd {
+	rootCmd := &RootCmd{Name: name}
 	cmd := cobra.Command{
-		Use:  "Start openIM application",
-		Long: fmt.Sprintf(`Start %s `, processName),
+		Use:   "Start openIM application",
+		Short: fmt.Sprintf(`Start %s `, name),
+		Long:  fmt.Sprintf(`Start %s `, name),
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			return rootCmd.persistentPreRun(cmd, opts...)
 		},
-		SilenceUsage:  true,
-		SilenceErrors: false,
 	}
-	cmd.Flags().StringP(config.FlagConf, "c", "", "path of config directory")
-	cmd.Flags().IntP(config.FlagTransferIndex, "i", 0, "process startup sequence number")
-
 	rootCmd.Command = cmd
+	rootCmd.addConfFlag()
 	return rootCmd
 }
 
-func (r *RootCmd) initEtcd() error {
-	configDirectory, _, err := r.getFlag(&r.Command)
-	if err != nil {
-		return err
+func (rc *RootCmd) persistentPreRun(cmd *cobra.Command, opts ...func(*CmdOpts)) error {
+	if err := rc.initializeConfiguration(cmd); err != nil {
+		return fmt.Errorf("failed to get configuration from command: %w", err)
 	}
-	disConfig := config.Discovery{}
-	err = config.Load(configDirectory, config.DiscoveryConfigFilename, config.EnvPrefixMap[config.DiscoveryConfigFilename], &disConfig)
-	if err != nil {
-		return err
+
+	cmdOpts := rc.applyOptions(opts...)
+
+	if err := rc.initializeLogger(cmdOpts); err != nil {
+		return fmt.Errorf("failed to initialize from config: %w", err)
 	}
-	if disConfig.Enable == config.ETCD {
-		discov, _ := kdisc.NewDiscoveryRegister(&disConfig, nil)
-		r.etcdClient = discov.(*etcd.SvcDiscoveryRegistryImpl).GetClient()
-	}
+
 	return nil
 }
 
-func (r *RootCmd) persistentPreRun(cmd *cobra.Command, opts ...func(*CmdOpts)) error {
-	if err := r.initEtcd(); err != nil {
-		return err
-	}
-	cmdOpts := r.applyOptions(opts...)
-	if err := r.initializeConfiguration(cmd, cmdOpts); err != nil {
-		return err
-	}
-	if err := r.updateConfigFromEtcd(cmdOpts); err != nil {
-		return err
-	}
-	if err := r.initializeLogger(cmdOpts); err != nil {
-		return errs.WrapMsg(err, "failed to initialize logger")
-	}
-	if err := r.etcdClient.Close(); err != nil {
-		return errs.WrapMsg(err, "failed to close etcd client")
-	}
-	return nil
+func (rc *RootCmd) initializeConfiguration(cmd *cobra.Command) error {
+	return rc.getConfFromCmdAndInit(cmd)
 }
 
-func (r *RootCmd) initializeConfiguration(cmd *cobra.Command, opts *CmdOpts) error {
-	configDirectory, _, err := r.getFlag(cmd)
-	if err != nil {
-		return err
-	}
-
-	// Load common configuration file
-	//opts.configMap[ShareFileName] = StructEnvPrefix{EnvPrefix: shareEnvPrefix, ConfigStruct: &r.share}
-	for configFileName, configStruct := range opts.configMap {
-		err := config.Load(configDirectory, configFileName, config.EnvPrefixMap[configFileName], configStruct)
-		if err != nil {
-			return err
-		}
-	}
-	// Load common log configuration file
-	return config.Load(configDirectory, config.LogConfigFileName, config.EnvPrefixMap[config.LogConfigFileName], &r.log)
-}
-
-func (r *RootCmd) updateConfigFromEtcd(opts *CmdOpts) error {
-	if r.etcdClient == nil {
-		return nil
-	}
-	ctx := context.TODO()
-
-	res, err := r.etcdClient.Get(ctx, disetcd.BuildKey(disetcd.EnableConfigCenterKey))
-	if err != nil {
-		log.ZWarn(ctx, "root cmd updateConfigFromEtcd, etcd Get EnableConfigCenterKey err: %v", errs.Wrap(err))
-		return nil
-	}
-	if res.Count == 0 {
-		return nil
-	} else {
-		if string(res.Kvs[0].Value) == disetcd.Disable {
-			return nil
-		} else if string(res.Kvs[0].Value) != disetcd.Enable {
-			return errs.New("unknown EnableConfigCenter value").Wrap()
-		}
-	}
-
-	update := func(configFileName string, configStruct any) error {
-		key := disetcd.BuildKey(configFileName)
-		etcdRes, err := r.etcdClient.Get(ctx, key)
-		if err != nil {
-			log.ZWarn(ctx, "root cmd updateConfigFromEtcd, etcd Get err: %v", errs.Wrap(err))
-			return nil
-		}
-		if etcdRes.Count == 0 {
-			data, err := json.Marshal(configStruct)
-			if err != nil {
-				return errs.ErrArgs.WithDetail(err.Error()).Wrap()
-			}
-			_, err = r.etcdClient.Put(ctx, disetcd.BuildKey(configFileName), string(data))
-			if err != nil {
-				log.ZWarn(ctx, "root cmd updateConfigFromEtcd, etcd Put err: %v", errs.Wrap(err))
-			}
-			return nil
-		}
-		err = json.Unmarshal(etcdRes.Kvs[0].Value, configStruct)
-		if err != nil {
-			return errs.WrapMsg(err, "failed to unmarshal config from etcd")
-		}
-		return nil
-	}
-	for configFileName, configStruct := range opts.configMap {
-		if err := update(configFileName, configStruct); err != nil {
-			return err
-		}
-	}
-	if err := update(config.LogConfigFileName, &r.log); err != nil {
-		return err
-	}
-	// Load common log configuration file
-	return nil
-
-}
-
-func (r *RootCmd) applyOptions(opts ...func(*CmdOpts)) *CmdOpts {
+func (rc *RootCmd) applyOptions(opts ...func(*CmdOpts)) *CmdOpts {
 	cmdOpts := defaultCmdOpts()
 	for _, opt := range opts {
 		opt(cmdOpts)
@@ -201,47 +97,90 @@ func (r *RootCmd) applyOptions(opts ...func(*CmdOpts)) *CmdOpts {
 	return cmdOpts
 }
 
-func (r *RootCmd) initializeLogger(cmdOpts *CmdOpts) error {
-	err := log.InitLoggerFromConfig(
-		cmdOpts.loggerPrefixName,
-		r.processName,
-		"", "",
-		r.log.RemainLogLevel,
-		r.log.IsStdout,
-		r.log.IsJson,
-		r.log.StorageLocation,
-		r.log.RemainRotationCount,
-		r.log.RotationTime,
-		version.Version,
-		r.log.IsSimplify,
-	)
-	if err != nil {
-		return errs.Wrap(err)
-	}
-	return errs.Wrap(log.InitConsoleLogger(r.processName, r.log.RemainLogLevel, r.log.IsJson, version.Version))
+func (rc *RootCmd) initializeLogger(cmdOpts *CmdOpts) error {
+	logConfig := config.Config.Log
 
+	return log.InitFromConfig(
+
+		cmdOpts.loggerPrefixName,
+		rc.Name,
+		logConfig.RemainLogLevel,
+		logConfig.IsStdout,
+		logConfig.IsJson,
+		logConfig.StorageLocation,
+		logConfig.RemainRotationCount,
+		logConfig.RotationTime,
+	)
 }
 
 func defaultCmdOpts() *CmdOpts {
 	return &CmdOpts{
-		loggerPrefixName: "openim-service-log",
+		loggerPrefixName: "OpenIM.log.all",
 	}
 }
 
-func (r *RootCmd) getFlag(cmd *cobra.Command) (string, int, error) {
-	configDirectory, err := cmd.Flags().GetString(config.FlagConf)
+func (r *RootCmd) SetRootCmdPt(cmdItf RootCmdPt) {
+	r.cmdItf = cmdItf
+}
+
+func (r *RootCmd) addConfFlag() {
+	r.Command.Flags().StringP(constant.FlagConf, "c", "", "path to config file folder")
+}
+
+func (r *RootCmd) AddPortFlag() {
+	r.Command.Flags().IntP(constant.FlagPort, "p", 0, "server listen port")
+}
+
+func (r *RootCmd) getPortFlag(cmd *cobra.Command) int {
+	port, err := cmd.Flags().GetInt(constant.FlagPort)
 	if err != nil {
-		return "", 0, errs.Wrap(err)
+		fmt.Println("Error getting ws port flag:", err)
 	}
-	r.configPath = configDirectory
-	index, err := cmd.Flags().GetInt(config.FlagTransferIndex)
-	if err != nil {
-		return "", 0, errs.Wrap(err)
+	if port == 0 {
+		port = r.PortFromConfig(constant.FlagPort)
 	}
-	r.index = index
-	return configDirectory, index, nil
+	return port
+}
+
+func (r *RootCmd) GetPortFlag() int {
+	return r.port
+}
+
+func (r *RootCmd) AddPrometheusPortFlag() {
+	r.Command.Flags().IntP(constant.FlagPrometheusPort, "", 0, "server prometheus listen port")
+}
+
+func (r *RootCmd) getPrometheusPortFlag(cmd *cobra.Command) int {
+	port, _ := cmd.Flags().GetInt(constant.FlagPrometheusPort)
+	if port == 0 {
+		port = r.PortFromConfig(constant.FlagPrometheusPort)
+	}
+	return port
+}
+
+func (r *RootCmd) GetPrometheusPortFlag() int {
+	return r.prometheusPort
+}
+
+func (r *RootCmd) getConfFromCmdAndInit(cmdLines *cobra.Command) error {
+	configFolderPath, _ := cmdLines.Flags().GetString(constant.FlagConf)
+	fmt.Println("configFolderPath:", configFolderPath)
+	return config2.InitConfig(configFolderPath)
 }
 
 func (r *RootCmd) Execute() error {
 	return r.Command.Execute()
+}
+
+func (r *RootCmd) AddCommand(cmds ...*cobra.Command) {
+	r.Command.AddCommand(cmds...)
+}
+
+func (r *RootCmd) GetPortFromConfig(portType string) int {
+	fmt.Println("RootCmd.GetPortFromConfig:", portType)
+	return 0
+}
+func (r *RootCmd) PortFromConfig(portType string) int {
+	fmt.Println("PortFromConfig:", portType)
+	return r.cmdItf.GetPortFromConfig(portType)
 }

@@ -15,16 +15,17 @@
 package convert
 
 import (
-	relationtb "github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
 	"reflect"
 	"testing"
 
-	"github.com/openimsdk/protocol/sdkws"
+	"github.com/OpenIMSDK/protocol/sdkws"
+
+	relationtb "github.com/openimsdk/open-im-server/v3/pkg/common/db/table/relation"
 )
 
 func TestUsersDB2Pb(t *testing.T) {
 	type args struct {
-		users []*relationtb.User
+		users []*relationtb.UserModel
 	}
 	tests := []struct {
 		name       string
@@ -49,7 +50,7 @@ func TestUserPb2DB(t *testing.T) {
 	tests := []struct {
 		name string
 		args args
-		want *relationtb.User
+		want *relationtb.UserModel
 	}{
 		// TODO: Add test cases.
 	}

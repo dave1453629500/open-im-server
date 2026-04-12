@@ -15,51 +15,47 @@
 package config
 
 import (
+	_ "embed"
+	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/field"
+	"github.com/OpenIMSDK/protocol/constant"
 	"gopkg.in/yaml.v3"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
 )
 
+//go:embed version
+var Version string
+
 const (
-	DefaultFolderPath = "../config/"
+	FileName             = "config.yaml"
+	NotificationFileName = "notification.yaml"
+	DefaultFolderPath    = "../config/"
 )
 
 // return absolude path join ../config/, this is k8s container config path.
-func GetDefaultConfigPath() (string, error) {
-	executablePath, err := os.Executable()
+func GetDefaultConfigPath() string {
+	b, err := filepath.Abs(os.Args[0])
 	if err != nil {
-		return "", errs.WrapMsg(err, "failed to get executable path")
+		fmt.Println("filepath.Abs error,err=", err)
+		return ""
 	}
-
-	configPath, err := field.OutDir(filepath.Join(filepath.Dir(executablePath), "../config/"))
-	if err != nil {
-		return "", errs.WrapMsg(err, "failed to get output directory", "outDir", filepath.Join(filepath.Dir(executablePath), "../config/"))
-	}
-	return configPath, nil
+	return filepath.Join(filepath.Dir(b), "../config/")
 }
 
 // getProjectRoot returns the absolute path of the project root directory.
-func GetProjectRoot() (string, error) {
-	executablePath, err := os.Executable()
-	if err != nil {
-		return "", errs.Wrap(err)
-	}
-	projectRoot, err := field.OutDir(filepath.Join(filepath.Dir(executablePath), "../../../../.."))
-	if err != nil {
-		return "", errs.Wrap(err)
-	}
-	return projectRoot, nil
+func GetProjectRoot() string {
+	b, _ := filepath.Abs(os.Args[0])
+
+	return filepath.Join(filepath.Dir(b), "../../../../..")
 }
 
-func GetOptionsByNotification(cfg NotificationConfig) msgprocessor.Options {
+func GetOptionsByNotification(cfg NotificationConf) msgprocessor.Options {
 	opts := msgprocessor.NewOptions()
 
-	if cfg.IsSendMsg {
+	if cfg.UnreadCount {
 		opts = msgprocessor.WithOptions(opts, msgprocessor.WithUnreadCount(true))
 	}
 	if cfg.OfflinePush.Enable {
@@ -75,29 +71,42 @@ func GetOptionsByNotification(cfg NotificationConfig) msgprocessor.Options {
 	return opts
 }
 
-// initConfig loads configuration from a specified path into the provided config structure.
-// If the specified config file does not exist, it attempts to load from the project's default "config" directory.
-// It logs informative messages regarding the configuration path being used.
 func initConfig(config any, configName, configFolderPath string) error {
 	configFolderPath = filepath.Join(configFolderPath, configName)
 	_, err := os.Stat(configFolderPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return errs.WrapMsg(err, "stat config path error", "config Folder Path", configFolderPath)
+			fmt.Println("stat config path error:", err.Error())
+			return fmt.Errorf("stat config path error: %w", err)
 		}
-		path, err := GetProjectRoot()
-		if err != nil {
-			return err
-		}
-		configFolderPath = filepath.Join(path, "config", configName)
+		configFolderPath = filepath.Join(GetProjectRoot(), "config", configName)
+		fmt.Println("flag's path,enviment's path,default path all is not exist,using project path:", configFolderPath)
 	}
 	data, err := os.ReadFile(configFolderPath)
 	if err != nil {
-		return errs.WrapMsg(err, "read file error", "config Folder Path", configFolderPath)
+		return fmt.Errorf("read file error: %w", err)
 	}
 	if err = yaml.Unmarshal(data, config); err != nil {
-		return errs.WrapMsg(err, "unmarshal yaml error", "config Folder Path", configFolderPath)
+		return fmt.Errorf("unmarshal yaml error: %w", err)
 	}
+	fmt.Println("use config", configFolderPath)
 
 	return nil
+}
+
+func InitConfig(configFolderPath string) error {
+	if configFolderPath == "" {
+		envConfigPath := os.Getenv("OPENIMCONFIG")
+		if envConfigPath != "" {
+			configFolderPath = envConfigPath
+		} else {
+			configFolderPath = GetDefaultConfigPath()
+		}
+	}
+
+	if err := initConfig(&Config, FileName, configFolderPath); err != nil {
+		return err
+	}
+
+	return initConfig(&Config.Notification, NotificationFileName, configFolderPath)
 }

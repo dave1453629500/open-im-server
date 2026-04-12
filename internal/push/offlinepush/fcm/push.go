@@ -16,22 +16,18 @@ package fcm
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"path/filepath"
-	"strings"
 
-	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/options"
-	"github.com/openimsdk/tools/utils/httputil"
-
-	firebase "firebase.google.com/go/v4"
-	"firebase.google.com/go/v4/messaging"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/tools/errs"
+	firebase "firebase.google.com/go"
+	"firebase.google.com/go/messaging"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/api/option"
+
+	"github.com/OpenIMSDK/protocol/constant"
+
+	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/cache"
 )
 
 const SinglePushCountLimit = 400
@@ -40,43 +36,27 @@ var Terminal = []int{constant.IOSPlatformID, constant.AndroidPlatformID, constan
 
 type Fcm struct {
 	fcmMsgCli *messaging.Client
-	cache     cache.ThirdCache
+	cache     cache.MsgModel
 }
 
-// NewClient initializes a new FCM client using the Firebase Admin SDK.
-// It requires the FCM service account credentials file located within the project's configuration directory.
-func NewClient(pushConf *config.Push, cache cache.ThirdCache, fcmConfigPath string) (*Fcm, error) {
-	var opt option.ClientOption
-	switch {
-	case len(pushConf.FCM.FilePath) != 0:
-		// with file path
-		credentialsFilePath := filepath.Join(fcmConfigPath, pushConf.FCM.FilePath)
-		opt = option.WithCredentialsFile(credentialsFilePath)
-	case len(pushConf.FCM.AuthURL) != 0:
-		// with authentication URL
-		client := httputil.NewHTTPClient(httputil.NewClientConfig())
-		resp, err := client.Get(pushConf.FCM.AuthURL)
-		if err != nil {
-			return nil, err
-		}
-		opt = option.WithCredentialsJSON(resp)
-	default:
-		return nil, errs.New("no FCM config").Wrap()
-	}
-
+func NewClient(cache cache.MsgModel) *Fcm {
+	projectRoot := config.GetProjectRoot()
+	credentialsFilePath := filepath.Join(projectRoot, "config", config.Config.Push.Fcm.ServiceAccount)
+	opt := option.WithCredentialsFile(credentialsFilePath)
 	fcmApp, err := firebase.NewApp(context.Background(), nil, opt)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil
 	}
+
 	ctx := context.Background()
 	fcmMsgClient, err := fcmApp.Messaging(ctx)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil
 	}
-	return &Fcm{fcmMsgCli: fcmMsgClient, cache: cache}, nil
+	return &Fcm{fcmMsgCli: fcmMsgClient, cache: cache}
 }
 
-func (f *Fcm) Push(ctx context.Context, userIDs []string, title, content string, opts *options.Opts) error {
+func (f *Fcm) Push(ctx context.Context, userIDs []string, title, content string, opts *offlinepush.Opts) error {
 	// accounts->registrationToken
 	allTokens := make(map[string][]string, 0)
 	for _, account := range userIDs {
@@ -95,30 +75,16 @@ func (f *Fcm) Push(ctx context.Context, userIDs []string, title, content string,
 	notification.Body = content
 	notification.Title = title
 	var messages []*messaging.Message
-	var sendErrBuilder strings.Builder
-	var msgErrBuilder strings.Builder
 	for userID, personTokens := range allTokens {
 		apns := &messaging.APNSConfig{Payload: &messaging.APNSPayload{Aps: &messaging.Aps{Sound: opts.IOSPushSound}}}
 		messageCount := len(messages)
 		if messageCount >= SinglePushCountLimit {
-			response, err := f.fcmMsgCli.SendEach(ctx, messages)
+			response, err := f.fcmMsgCli.SendAll(ctx, messages)
 			if err != nil {
 				Fail = Fail + messageCount
-				// Record push error
-				sendErrBuilder.WriteString(err.Error())
-				sendErrBuilder.WriteByte('.')
 			} else {
 				Success = Success + response.SuccessCount
 				Fail = Fail + response.FailureCount
-				if response.FailureCount != 0 {
-					// Record message error
-					for i := range response.Responses {
-						if !response.Responses[i].Success {
-							msgErrBuilder.WriteString(response.Responses[i].Error.Error())
-							msgErrBuilder.WriteByte('.')
-						}
-					}
-				}
 			}
 			messages = messages[0:0]
 		}
@@ -135,7 +101,7 @@ func (f *Fcm) Push(ctx context.Context, userIDs []string, title, content string,
 			unreadCountSum, err := f.cache.GetUserBadgeUnreadCountSum(ctx, userID)
 			if err == nil && unreadCountSum != 0 {
 				apns.Payload.Aps.Badge = &unreadCountSum
-			} else if errors.Is(err, redis.Nil) || unreadCountSum == 0 {
+			} else if err == redis.Nil || unreadCountSum == 0 {
 				zero := 1
 				apns.Payload.Aps.Badge = &zero
 			} else {
@@ -156,17 +122,14 @@ func (f *Fcm) Push(ctx context.Context, userIDs []string, title, content string,
 	}
 	messageCount := len(messages)
 	if messageCount > 0 {
-		response, err := f.fcmMsgCli.SendEach(ctx, messages)
+		response, err := f.fcmMsgCli.SendAll(ctx, messages)
 		if err != nil {
 			Fail = Fail + messageCount
+			// log.Info(operationID, "some token push err", err.Error(), messageCount)
 		} else {
 			Success = Success + response.SuccessCount
 			Fail = Fail + response.FailureCount
 		}
-	}
-	if Fail != 0 {
-		return errs.New(fmt.Sprintf("%d message send failed;send err:%s;message err:%s",
-			Fail, sendErrBuilder.String(), msgErrBuilder.String())).Wrap()
 	}
 	return nil
 }

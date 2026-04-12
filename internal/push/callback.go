@@ -16,135 +16,123 @@ package push
 
 import (
 	"context"
-	"encoding/json"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/protocol/sdkws"
+	"github.com/OpenIMSDK/tools/mcontext"
+	"github.com/OpenIMSDK/tools/utils"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/callbackstruct"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/protocol/sdkws"
-	"github.com/openimsdk/tools/mcontext"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/http"
 )
 
-func (c *ConsumerHandler) webhookBeforeOfflinePush(ctx context.Context, before *config.BeforeConfig, userIDs []string, msg *sdkws.MsgData, offlinePushUserIDs *[]string) error {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		if msg.ContentType == constant.Typing {
-			return nil
-		}
-		req := &callbackstruct.CallbackBeforePushReq{
-			UserStatusBatchCallbackReq: callbackstruct.UserStatusBatchCallbackReq{
-				UserStatusBaseCallback: callbackstruct.UserStatusBaseCallback{
-					CallbackCommand: callbackstruct.CallbackBeforeOfflinePushCommand,
-					OperationID:     mcontext.GetOperationID(ctx),
-					PlatformID:      int(msg.SenderPlatformID),
-					Platform:        constant.PlatformIDToName(int(msg.SenderPlatformID)),
-				},
-				UserIDList: userIDs,
-			},
-			OfflinePushInfo: msg.OfflinePushInfo,
-			ClientMsgID:     msg.ClientMsgID,
-			SendID:          msg.SendID,
-			GroupID:         msg.GroupID,
-			ContentType:     msg.ContentType,
-			SessionType:     msg.SessionType,
-			AtUserIDs:       msg.AtUserIDList,
-			Content:         GetContent(msg),
-		}
-
-		resp := &callbackstruct.CallbackBeforePushResp{}
-
-		if err := c.webhookClient.SyncPost(ctx, req.GetCallbackCommand(), req, resp, before); err != nil {
-			return err
-		}
-
-		if len(resp.UserIDs) != 0 {
-			*offlinePushUserIDs = resp.UserIDs
-		}
-		if resp.OfflinePushInfo != nil {
-			msg.OfflinePushInfo = resp.OfflinePushInfo
-		}
-		return nil
-	})
+func url() string {
+	return config.Config.Callback.CallbackUrl
 }
 
-func (c *ConsumerHandler) webhookBeforeOnlinePush(ctx context.Context, before *config.BeforeConfig, userIDs []string, msg *sdkws.MsgData) error {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		if msg.ContentType == constant.Typing {
-			return nil
-		}
-		req := callbackstruct.CallbackBeforePushReq{
-			UserStatusBatchCallbackReq: callbackstruct.UserStatusBatchCallbackReq{
-				UserStatusBaseCallback: callbackstruct.UserStatusBaseCallback{
-					CallbackCommand: callbackstruct.CallbackBeforeOnlinePushCommand,
-					OperationID:     mcontext.GetOperationID(ctx),
-					PlatformID:      int(msg.SenderPlatformID),
-					Platform:        constant.PlatformIDToName(int(msg.SenderPlatformID)),
-				},
-				UserIDList: userIDs,
-			},
-			ClientMsgID: msg.ClientMsgID,
-			SendID:      msg.SendID,
-			GroupID:     msg.GroupID,
-			ContentType: msg.ContentType,
-			SessionType: msg.SessionType,
-			AtUserIDs:   msg.AtUserIDList,
-			Content:     GetContent(msg),
-		}
-		resp := &callbackstruct.CallbackBeforePushResp{}
-		if err := c.webhookClient.SyncPost(ctx, req.GetCallbackCommand(), req, resp, before); err != nil {
-			return err
-		}
-		return nil
-	})
-}
-
-func (c *ConsumerHandler) webhookBeforeGroupOnlinePush(
+func callbackOfflinePush(
 	ctx context.Context,
-	before *config.BeforeConfig,
-	groupID string,
+	userIDs []string,
 	msg *sdkws.MsgData,
-	pushToUserIDs *[]string,
+	offlinePushUserIDs *[]string,
 ) error {
-	return webhook.WithCondition(ctx, before, func(ctx context.Context) error {
-		if msg.ContentType == constant.Typing {
-			return nil
-		}
-		req := callbackstruct.CallbackBeforeSuperGroupOnlinePushReq{
+	if !config.Config.Callback.CallbackOfflinePush.Enable {
+		return nil
+	}
+	req := &callbackstruct.CallbackBeforePushReq{
+		UserStatusBatchCallbackReq: callbackstruct.UserStatusBatchCallbackReq{
 			UserStatusBaseCallback: callbackstruct.UserStatusBaseCallback{
-				CallbackCommand: callbackstruct.CallbackBeforeGroupOnlinePushCommand,
+				CallbackCommand: callbackstruct.CallbackOfflinePushCommand,
 				OperationID:     mcontext.GetOperationID(ctx),
 				PlatformID:      int(msg.SenderPlatformID),
 				Platform:        constant.PlatformIDToName(int(msg.SenderPlatformID)),
 			},
-			ClientMsgID: msg.ClientMsgID,
-			SendID:      msg.SendID,
-			GroupID:     groupID,
-			ContentType: msg.ContentType,
-			SessionType: msg.SessionType,
-			AtUserIDs:   msg.AtUserIDList,
-			Content:     GetContent(msg),
-			Seq:         msg.Seq,
-		}
-		resp := &callbackstruct.CallbackBeforeSuperGroupOnlinePushResp{}
-		if err := c.webhookClient.SyncPost(ctx, req.GetCallbackCommand(), req, resp, before); err != nil {
-			return err
-		}
-		if len(resp.UserIDs) != 0 {
-			*pushToUserIDs = resp.UserIDs
-		}
-		return nil
-	})
+			UserIDList: userIDs,
+		},
+		OfflinePushInfo: msg.OfflinePushInfo,
+		ClientMsgID:     msg.ClientMsgID,
+		SendID:          msg.SendID,
+		GroupID:         msg.GroupID,
+		ContentType:     msg.ContentType,
+		SessionType:     msg.SessionType,
+		AtUserIDs:       msg.AtUserIDList,
+		Content:         GetContent(msg),
+	}
+	resp := &callbackstruct.CallbackBeforePushResp{}
+	if err := http.CallBackPostReturn(ctx, url(), req, resp, config.Config.Callback.CallbackOfflinePush); err != nil {
+		return err
+	}
+	if len(resp.UserIDs) != 0 {
+		*offlinePushUserIDs = resp.UserIDs
+	}
+	if resp.OfflinePushInfo != nil {
+		msg.OfflinePushInfo = resp.OfflinePushInfo
+	}
+	return nil
 }
 
-func GetContent(msg *sdkws.MsgData) string {
-	if msg.ContentType >= constant.NotificationBegin && msg.ContentType <= constant.NotificationEnd {
-		var notification sdkws.NotificationElem
-		if err := json.Unmarshal(msg.Content, &notification); err != nil {
-			return ""
-		}
-		return notification.Detail
-	} else {
-		return string(msg.Content)
+func callbackOnlinePush(ctx context.Context, userIDs []string, msg *sdkws.MsgData) error {
+	if !config.Config.Callback.CallbackOnlinePush.Enable || utils.Contain(msg.SendID, userIDs...) {
+		return nil
 	}
+	req := callbackstruct.CallbackBeforePushReq{
+		UserStatusBatchCallbackReq: callbackstruct.UserStatusBatchCallbackReq{
+			UserStatusBaseCallback: callbackstruct.UserStatusBaseCallback{
+				CallbackCommand: callbackstruct.CallbackOnlinePushCommand,
+				OperationID:     mcontext.GetOperationID(ctx),
+				PlatformID:      int(msg.SenderPlatformID),
+				Platform:        constant.PlatformIDToName(int(msg.SenderPlatformID)),
+			},
+			UserIDList: userIDs,
+		},
+		ClientMsgID: msg.ClientMsgID,
+		SendID:      msg.SendID,
+		GroupID:     msg.GroupID,
+		ContentType: msg.ContentType,
+		SessionType: msg.SessionType,
+		AtUserIDs:   msg.AtUserIDList,
+		Content:     GetContent(msg),
+	}
+	resp := &callbackstruct.CallbackBeforePushResp{}
+	if err := http.CallBackPostReturn(ctx, url(), req, resp, config.Config.Callback.CallbackOnlinePush); err != nil {
+		return err
+	}
+	return nil
+}
+
+func callbackBeforeSuperGroupOnlinePush(
+	ctx context.Context,
+	groupID string,
+	msg *sdkws.MsgData,
+	pushToUserIDs *[]string,
+) error {
+	if !config.Config.Callback.CallbackBeforeSuperGroupOnlinePush.Enable {
+		return nil
+	}
+	req := callbackstruct.CallbackBeforeSuperGroupOnlinePushReq{
+		UserStatusBaseCallback: callbackstruct.UserStatusBaseCallback{
+			CallbackCommand: callbackstruct.CallbackSuperGroupOnlinePushCommand,
+			OperationID:     mcontext.GetOperationID(ctx),
+			PlatformID:      int(msg.SenderPlatformID),
+			Platform:        constant.PlatformIDToName(int(msg.SenderPlatformID)),
+		},
+		ClientMsgID: msg.ClientMsgID,
+		SendID:      msg.SendID,
+		GroupID:     groupID,
+		ContentType: msg.ContentType,
+		SessionType: msg.SessionType,
+		AtUserIDs:   msg.AtUserIDList,
+		Content:     GetContent(msg),
+		Seq:         msg.Seq,
+	}
+	resp := &callbackstruct.CallbackBeforeSuperGroupOnlinePushResp{}
+	if err := http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, req, resp, config.Config.Callback.CallbackBeforeSuperGroupOnlinePush); err != nil {
+		return err
+	}
+	return nil
+	if len(resp.UserIDs) != 0 {
+		*pushToUserIDs = resp.UserIDs
+	}
+	return nil
 }

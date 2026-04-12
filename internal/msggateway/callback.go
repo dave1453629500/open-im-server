@@ -18,17 +18,26 @@ import (
 	"context"
 	"time"
 
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/tools/mcontext"
+
 	cbapi "github.com/openimsdk/open-im-server/v3/pkg/callbackstruct"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/tools/mcontext"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/http"
 )
 
-func (ws *WsServer) webhookAfterUserOnline(ctx context.Context, after *config.AfterConfig, userID string, platformID int, isAppBackground bool, connID string) {
+func callBackURL() string {
+	return config.Config.Callback.CallbackUrl
+}
+
+func CallbackUserOnline(ctx context.Context, userID string, platformID int, isAppBackground bool, connID string) error {
+	if !config.Config.Callback.CallbackUserOnline.Enable {
+		return nil
+	}
 	req := cbapi.CallbackUserOnlineReq{
 		UserStatusCallbackReq: cbapi.UserStatusCallbackReq{
 			UserStatusBaseCallback: cbapi.UserStatusBaseCallback{
-				CallbackCommand: cbapi.CallbackAfterUserOnlineCommand,
+				CallbackCommand: cbapi.CallbackUserOnlineCommand,
 				OperationID:     mcontext.GetOperationID(ctx),
 				PlatformID:      platformID,
 				Platform:        constant.PlatformIDToName(platformID),
@@ -39,14 +48,21 @@ func (ws *WsServer) webhookAfterUserOnline(ctx context.Context, after *config.Af
 		IsAppBackground: isAppBackground,
 		ConnID:          connID,
 	}
-	ws.webhookClient.AsyncPost(ctx, req.GetCallbackCommand(), req, &cbapi.CommonCallbackResp{}, after)
+	resp := cbapi.CommonCallbackResp{}
+	if err := http.CallBackPostReturn(ctx, callBackURL(), &req, &resp, config.Config.Callback.CallbackUserOnline); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (ws *WsServer) webhookAfterUserOffline(ctx context.Context, after *config.AfterConfig, userID string, platformID int, connID string) {
+func CallbackUserOffline(ctx context.Context, userID string, platformID int, connID string) error {
+	if !config.Config.Callback.CallbackUserOffline.Enable {
+		return nil
+	}
 	req := &cbapi.CallbackUserOfflineReq{
 		UserStatusCallbackReq: cbapi.UserStatusCallbackReq{
 			UserStatusBaseCallback: cbapi.UserStatusBaseCallback{
-				CallbackCommand: cbapi.CallbackAfterUserOfflineCommand,
+				CallbackCommand: cbapi.CallbackUserOfflineCommand,
 				OperationID:     mcontext.GetOperationID(ctx),
 				PlatformID:      platformID,
 				Platform:        constant.PlatformIDToName(platformID),
@@ -56,14 +72,21 @@ func (ws *WsServer) webhookAfterUserOffline(ctx context.Context, after *config.A
 		Seq:    time.Now().UnixMilli(),
 		ConnID: connID,
 	}
-	ws.webhookClient.AsyncPost(ctx, req.GetCallbackCommand(), req, &cbapi.CallbackUserOfflineResp{}, after)
+	resp := &cbapi.CallbackUserOfflineResp{}
+	if err := http.CallBackPostReturn(ctx, callBackURL(), req, resp, config.Config.Callback.CallbackUserOffline); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (ws *WsServer) webhookAfterUserKickOff(ctx context.Context, after *config.AfterConfig, userID string, platformID int) {
+func CallbackUserKickOff(ctx context.Context, userID string, platformID int) error {
+	if !config.Config.Callback.CallbackUserKickOff.Enable {
+		return nil
+	}
 	req := &cbapi.CallbackUserKickOffReq{
 		UserStatusCallbackReq: cbapi.UserStatusCallbackReq{
 			UserStatusBaseCallback: cbapi.UserStatusBaseCallback{
-				CallbackCommand: cbapi.CallbackAfterUserKickOffCommand,
+				CallbackCommand: cbapi.CallbackUserKickOffCommand,
 				OperationID:     mcontext.GetOperationID(ctx),
 				PlatformID:      platformID,
 				Platform:        constant.PlatformIDToName(platformID),
@@ -72,5 +95,93 @@ func (ws *WsServer) webhookAfterUserKickOff(ctx context.Context, after *config.A
 		},
 		Seq: time.Now().UnixMilli(),
 	}
-	ws.webhookClient.AsyncPost(ctx, req.GetCallbackCommand(), req, &cbapi.CommonCallbackResp{}, after)
+	resp := &cbapi.CommonCallbackResp{}
+	if err := http.CallBackPostReturn(ctx, callBackURL(), req, resp, config.Config.Callback.CallbackUserOffline); err != nil {
+		return err
+	}
+	return nil
 }
+
+// func callbackUserOnline(operationID, userID string, platformID int, token string, isAppBackground bool, connID
+// string) cbApi.CommonCallbackResp {
+//	callbackResp := cbApi.CommonCallbackResp{OperationID: operationID}
+//	if !config.Config.Callback.CallbackUserOnline.Enable {
+//		return callbackResp
+//	}
+//	callbackUserOnlineReq := cbApi.CallbackUserOnlineReq{
+//		Token: token,
+//		UserStatusCallbackReq: cbApi.UserStatusCallbackReq{
+//			UserStatusBaseCallback: cbApi.UserStatusBaseCallback{
+//				CallbackCommand: constant.CallbackUserOnlineCommand,
+//				OperationID:     operationID,
+//				PlatformID:      int32(platformID),
+//				Platform:        constant.PlatformIDToName(platformID),
+//			},
+//			UserID: userID,
+//		},
+//		Seq:             int(time.Now().UnixNano() / 1e6),
+//		IsAppBackground: isAppBackground,
+//		ConnID:          connID,
+//	}
+//	callbackUserOnlineResp := &cbApi.CallbackUserOnlineResp{CommonCallbackResp: &callbackResp}
+// 	if err := http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, constant.CallbackUserOnlineCommand,
+// callbackUserOnlineReq, callbackUserOnlineResp, config.Config.Callback.CallbackUserOnline.CallbackTimeOut); err != nil
+// {
+//		callbackResp.ErrCode = http2.StatusInternalServerError
+//		callbackResp.ErrMsg = err.Error()
+//	}
+//	return callbackResp
+//}
+//func callbackUserOffline(operationID, userID string, platformID int, connID string) cbApi.CommonCallbackResp {
+//	callbackResp := cbApi.CommonCallbackResp{OperationID: operationID}
+//	if !config.Config.Callback.CallbackUserOffline.Enable {
+//		return callbackResp
+//	}
+//	callbackOfflineReq := cbApi.CallbackUserOfflineReq{
+//		UserStatusCallbackReq: cbApi.UserStatusCallbackReq{
+//			UserStatusBaseCallback: cbApi.UserStatusBaseCallback{
+//				CallbackCommand: constant.CallbackUserOfflineCommand,
+//				OperationID:     operationID,
+//				PlatformID:      int32(platformID),
+//				Platform:        constant.PlatformIDToName(platformID),
+//			},
+//			UserID: userID,
+//		},
+//		Seq:    int(time.Now().UnixNano() / 1e6),
+//		ConnID: connID,
+//	}
+//	callbackUserOfflineResp := &cbApi.CallbackUserOfflineResp{CommonCallbackResp: &callbackResp}
+// 	if err := http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, constant.CallbackUserOfflineCommand,
+// callbackOfflineReq, callbackUserOfflineResp, config.Config.Callback.CallbackUserOffline.CallbackTimeOut); err != nil
+// {
+//		callbackResp.ErrCode = http2.StatusInternalServerError
+//		callbackResp.ErrMsg = err.Error()
+//	}
+//	return callbackResp
+//}
+//func callbackUserKickOff(operationID string, userID string, platformID int) cbApi.CommonCallbackResp {
+//	callbackResp := cbApi.CommonCallbackResp{OperationID: operationID}
+//	if !config.Config.Callback.CallbackUserKickOff.Enable {
+//		return callbackResp
+//	}
+//	callbackUserKickOffReq := cbApi.CallbackUserKickOffReq{
+//		UserStatusCallbackReq: cbApi.UserStatusCallbackReq{
+//			UserStatusBaseCallback: cbApi.UserStatusBaseCallback{
+//				CallbackCommand: constant.CallbackUserKickOffCommand,
+//				OperationID:     operationID,
+//				PlatformID:      int32(platformID),
+//				Platform:        constant.PlatformIDToName(platformID),
+//			},
+//			UserID: userID,
+//		},
+//		Seq: int(time.Now().UnixNano() / 1e6),
+//	}
+//	callbackUserKickOffResp := &cbApi.CallbackUserKickOffResp{CommonCallbackResp: &callbackResp}
+// 	if err := http.CallBackPostReturn(ctx, config.Config.Callback.CallbackUrl, constant.CallbackUserKickOffCommand,
+// callbackUserKickOffReq, callbackUserKickOffResp, config.Config.Callback.CallbackUserOffline.CallbackTimeOut); err !=
+// nil {
+//		callbackResp.ErrCode = http2.StatusInternalServerError
+//		callbackResp.ErrMsg = err.Error()
+//	}
+//	return callbackResp
+//}

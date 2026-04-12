@@ -17,15 +17,17 @@ package third
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"time"
 
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/protocol/third"
+	"github.com/OpenIMSDK/tools/errs"
+	"github.com/OpenIMSDK/tools/utils"
+	utils2 "github.com/OpenIMSDK/tools/utils"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
-	relationtb "github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/protocol/third"
-	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/utils/datautil"
+	relationtb "github.com/openimsdk/open-im-server/v3/pkg/common/db/table/relation"
 )
 
 func genLogID() string {
@@ -44,19 +46,18 @@ func genLogID() string {
 }
 
 func (t *thirdServer) UploadLogs(ctx context.Context, req *third.UploadLogsReq) (*third.UploadLogsResp, error) {
-	var dbLogs []*relationtb.Log
+	var DBlogs []*relationtb.LogModel
 	userID := ctx.Value(constant.OpUserID).(string)
 	platform := constant.PlatformID2Name[int(req.Platform)]
 	for _, fileURL := range req.FileURLs {
-		log := relationtb.Log{
-			Platform:     platform,
-			UserID:       userID,
-			CreateTime:   time.Now(),
-			Url:          fileURL.URL,
-			FileName:     fileURL.Filename,
-			AppFramework: req.AppFramework,
-			Version:      req.Version,
-			Ex:           req.Ex,
+		log := relationtb.LogModel{
+			Version:    req.Version,
+			SystemType: req.SystemType,
+			Platform:   platform,
+			UserID:     userID,
+			CreateTime: time.Now(),
+			Url:        fileURL.URL,
+			FileName:   fileURL.Filename,
 		}
 		for i := 0; i < 20; i++ {
 			id := genLogID()
@@ -70,11 +71,11 @@ func (t *thirdServer) UploadLogs(ctx context.Context, req *third.UploadLogsReq) 
 			}
 		}
 		if log.LogID == "" {
-			return nil, servererrs.ErrData.WrapMsg("Log id gen error")
+			return nil, errs.ErrData.Wrap("LogModel id gen error")
 		}
-		dbLogs = append(dbLogs, &log)
+		DBlogs = append(DBlogs, &log)
 	}
-	err := t.thirdDatabase.UploadLogs(ctx, dbLogs)
+	err := t.thirdDatabase.UploadLogs(ctx, DBlogs)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +83,7 @@ func (t *thirdServer) UploadLogs(ctx context.Context, req *third.UploadLogsReq) 
 }
 
 func (t *thirdServer) DeleteLogs(ctx context.Context, req *third.DeleteLogsReq) (*third.DeleteLogsResp, error) {
-	if err := authverify.CheckAdmin(ctx, t.config.Share.IMAdminUserID); err != nil {
+	if err := authverify.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	userID := ""
@@ -94,8 +95,8 @@ func (t *thirdServer) DeleteLogs(ctx context.Context, req *third.DeleteLogsReq) 
 	for _, log := range logs {
 		logIDs = append(logIDs, log.LogID)
 	}
-	if ids := datautil.Single(req.LogIDs, logIDs); len(ids) > 0 {
-		return nil, errs.ErrRecordNotFound.WrapMsg("logIDs not found", "logIDs", ids)
+	if ids := utils2.Single(req.LogIDs, logIDs); len(ids) > 0 {
+		return nil, errs.ErrRecordNotFound.Wrap(fmt.Sprintf("logIDs not found%#v", ids))
 	}
 	err = t.thirdDatabase.DeleteLogs(ctx, req.LogIDs, userID)
 	if err != nil {
@@ -105,12 +106,12 @@ func (t *thirdServer) DeleteLogs(ctx context.Context, req *third.DeleteLogsReq) 
 	return &third.DeleteLogsResp{}, nil
 }
 
-func dbToPbLogInfos(logs []*relationtb.Log) []*third.LogInfo {
-	db2pbForLogInfo := func(log *relationtb.Log) *third.LogInfo {
+func dbToPbLogInfos(logs []*relationtb.LogModel) []*third.LogInfo {
+	db2pbForLogInfo := func(log *relationtb.LogModel) *third.LogInfo {
 		return &third.LogInfo{
 			Filename:   log.FileName,
 			UserID:     log.UserID,
-			Platform:   log.Platform,
+			Platform:   utils.StringToInt32(log.Platform),
 			Url:        log.Url,
 			CreateTime: log.CreateTime.UnixMilli(),
 			LogID:      log.LogID,
@@ -119,11 +120,11 @@ func dbToPbLogInfos(logs []*relationtb.Log) []*third.LogInfo {
 			Ex:         log.Ex,
 		}
 	}
-	return datautil.Slice(logs, db2pbForLogInfo)
+	return utils.Slice(logs, db2pbForLogInfo)
 }
 
 func (t *thirdServer) SearchLogs(ctx context.Context, req *third.SearchLogsReq) (*third.SearchLogsResp, error) {
-	if err := authverify.CheckAdmin(ctx, t.config.Share.IMAdminUserID); err != nil {
+	if err := authverify.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	var (
@@ -131,15 +132,8 @@ func (t *thirdServer) SearchLogs(ctx context.Context, req *third.SearchLogsReq) 
 		userIDs []string
 	)
 	if req.StartTime > req.EndTime {
-		return nil, errs.ErrArgs.WrapMsg("startTime>endTime")
+		return nil, errs.ErrArgs.Wrap("startTime>endTime")
 	}
-	if req.StartTime == 0 && req.EndTime == 0 {
-		t := time.Date(2019, time.January, 1, 0, 0, 0, 0, time.UTC)
-		timestampMills := t.UnixNano() / int64(time.Millisecond)
-		req.StartTime = timestampMills
-		req.EndTime = time.Now().UnixNano() / int64(time.Millisecond)
-	}
-
 	total, logs, err := t.thirdDatabase.SearchLogs(ctx, req.Keyword, time.UnixMilli(req.StartTime), time.UnixMilli(req.EndTime), req.Pagination)
 	if err != nil {
 		return nil, err
@@ -148,7 +142,7 @@ func (t *thirdServer) SearchLogs(ctx context.Context, req *third.SearchLogsReq) 
 	for _, log := range logs {
 		userIDs = append(userIDs, log.UserID)
 	}
-	userMap, err := t.userClient.GetUsersInfoMap(ctx, userIDs)
+	userMap, err := t.userRpcClient.GetUsersInfoMap(ctx, userIDs)
 	if err != nil {
 		return nil, err
 	}

@@ -16,10 +16,10 @@ package msggateway
 
 import (
 	"crypto/rand"
-	"github.com/stretchr/testify/assert"
 	"sync"
 	"testing"
-	"unsafe"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func mockRandom() []byte {
@@ -37,16 +37,10 @@ func TestCompressDecompress(t *testing.T) {
 
 		// compress
 		dest, err := compressor.CompressWithPool(src)
-		if err != nil {
-			t.Log(err)
-		}
 		assert.Equal(t, nil, err)
 
 		// decompress
 		res, err := compressor.DecompressWithPool(dest)
-		if err != nil {
-			t.Log(err)
-		}
 		assert.Equal(t, nil, err)
 
 		// check
@@ -66,16 +60,10 @@ func TestCompressDecompressWithConcurrency(t *testing.T) {
 
 			// compress
 			dest, err := compressor.CompressWithPool(src)
-			if err != nil {
-				t.Log(err)
-			}
 			assert.Equal(t, nil, err)
 
 			// decompress
 			res, err := compressor.DecompressWithPool(dest)
-			if err != nil {
-				t.Log(err)
-			}
 			assert.Equal(t, nil, err)
 
 			// check
@@ -111,7 +99,6 @@ func BenchmarkDecompress(b *testing.B) {
 
 	compressor := NewGzipCompressor()
 	comdata, err := compressor.Compress(src)
-
 	assert.Equal(b, nil, err)
 
 	for i := 0; i < b.N; i++ {
@@ -131,9 +118,4 @@ func BenchmarkDecompressWithSyncPool(b *testing.B) {
 		_, err := compressor.DecompressWithPool(comdata)
 		assert.Equal(b, nil, err)
 	}
-}
-
-func TestName(t *testing.T) {
-	t.Log(unsafe.Sizeof(Client{}))
-
 }

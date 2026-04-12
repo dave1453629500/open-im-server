@@ -15,225 +15,138 @@
 package startrpc
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
-	conf "github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/tools/utils/datautil"
-	"github.com/openimsdk/tools/utils/jsonutil"
-	"github.com/openimsdk/tools/utils/network"
-	"google.golang.org/grpc/status"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/errgroup"
 
-	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discovery"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
-	"github.com/openimsdk/tools/discovery"
-	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/log"
-	"github.com/openimsdk/tools/mw"
+
+	grpcprometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
+	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discoveryregister"
+
+	"github.com/OpenIMSDK/tools/discoveryregistry"
+	"github.com/OpenIMSDK/tools/mw"
+	"github.com/OpenIMSDK/tools/network"
+	"github.com/OpenIMSDK/tools/utils"
 )
 
-func init() {
-	prommetrics.RegistryAll()
-}
-
-func Start[T any](ctx context.Context, disc *conf.Discovery, prometheusConfig *conf.Prometheus, listenIP,
-	registerIP string, autoSetPorts bool, rpcPorts []int, index int, rpcRegisterName string, notification *conf.Notification, config T,
-	watchConfigNames []string, watchServiceNames []string,
-	rpcFn func(ctx context.Context, config T, client discovery.Conn, server grpc.ServiceRegistrar) error,
-	options ...grpc.ServerOption) error {
-
-	if notification != nil {
-		conf.InitNotification(notification)
-	}
-
-	options = append(options, mw.GrpcServer())
-
-	registerIP, err := network.GetRpcRegisterIP(registerIP)
+// Start rpc server.
+func Start(
+	rpcPort int,
+	rpcRegisterName string,
+	prometheusPort int,
+	rpcFn func(client discoveryregistry.SvcDiscoveryRegistry, server *grpc.Server) error,
+	options ...grpc.ServerOption,
+) error {
+	fmt.Printf("start %s server, port: %d, prometheusPort: %d, OpenIM version: %s\n",
+		rpcRegisterName, rpcPort, prometheusPort, config.Version)
+	listener, err := net.Listen(
+		"tcp",
+		net.JoinHostPort(network.GetListenIP(config.Config.Rpc.ListenIP), strconv.Itoa(rpcPort)),
+	)
 	if err != nil {
 		return err
 	}
-	var prometheusListenAddr string
-	if autoSetPorts {
-		prometheusListenAddr = net.JoinHostPort(listenIP, "0")
-	} else {
-		prometheusPort, err := datautil.GetElemByIndex(prometheusConfig.Ports, index)
-		if err != nil {
-			return err
-		}
-		prometheusListenAddr = net.JoinHostPort(listenIP, strconv.Itoa(prometheusPort))
-	}
 
-	watchConfigNames = append(watchConfigNames, conf.LogConfigFileName)
-
-	client, err := kdisc.NewDiscoveryRegister(disc, watchServiceNames)
+	defer listener.Close()
+	client, err := kdisc.NewDiscoveryRegister(config.Config.Envs.Discovery)
 	if err != nil {
-		return err
+		return utils.Wrap1(err)
 	}
 
 	defer client.Close()
-	client.AddOption(
-		mw.GrpcClient(), grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultServiceConfig(fmt.Sprintf(`{"LoadBalancingPolicy": "%s"}`, "round_robin")),
-	)
-
-	ctx, cancel := context.WithCancelCause(ctx)
-
-	go func() {
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
-		select {
-		case <-ctx.Done():
-			return
-		case val := <-sigs:
-			log.ZDebug(ctx, "recv signal", "signal", val.String())
-			cancel(fmt.Errorf("signal %s", val.String()))
-		}
-	}()
-
-	if prometheusListenAddr != "" {
-		options = append(
-			options,
-			prommetricsUnaryInterceptor(rpcRegisterName),
-			prommetricsStreamInterceptor(rpcRegisterName),
-		)
-		prometheusListener, prometheusPort, err := listenTCP(prometheusListenAddr)
-		if err != nil {
-			return err
-		}
-		log.ZDebug(ctx, "prometheus start", "addr", prometheusListener.Addr(), "rpcRegisterName", rpcRegisterName)
-		target, err := jsonutil.JsonMarshal(prommetrics.BuildDefaultTarget(registerIP, prometheusPort))
-		if err != nil {
-			return err
-		}
-		if err := client.SetKey(ctx, prommetrics.BuildDiscoveryKey(prommetrics.APIKeyName), target); err != nil {
-			if !errors.Is(err, discovery.ErrNotSupportedKeyValue) {
-				return err
-			}
-		}
-		go func() {
-			err := prommetrics.Start(prometheusListener)
-			if err == nil {
-				err = fmt.Errorf("listener done")
-			}
-			cancel(fmt.Errorf("prommetrics %s %w", rpcRegisterName, err))
-		}()
-	}
-
-	var (
-		rpcServer       *grpc.Server
-		rpcGracefulStop chan struct{}
-	)
-
-	onGrpcServiceRegistrar := func(desc *grpc.ServiceDesc, impl any) {
-		if rpcServer != nil {
-			rpcServer.RegisterService(desc, impl)
-			return
-		}
-		var rpcListenAddr string
-		if autoSetPorts {
-			rpcListenAddr = net.JoinHostPort(listenIP, "0")
-		} else {
-			rpcPort, err := datautil.GetElemByIndex(rpcPorts, index)
-			if err != nil {
-				cancel(fmt.Errorf("rpcPorts index out of range %s %w", rpcRegisterName, err))
-				return
-			}
-			rpcListenAddr = net.JoinHostPort(listenIP, strconv.Itoa(rpcPort))
-		}
-		rpcListener, err := net.Listen("tcp", rpcListenAddr)
-		if err != nil {
-			cancel(fmt.Errorf("listen rpc %s %s %w", rpcRegisterName, rpcListenAddr, err))
-			return
-		}
-
-		rpcServer = grpc.NewServer(options...)
-		rpcServer.RegisterService(desc, impl)
-		rpcGracefulStop = make(chan struct{})
-		rpcPort := rpcListener.Addr().(*net.TCPAddr).Port
-		log.ZDebug(ctx, "rpc start register", "rpcRegisterName", rpcRegisterName, "registerIP", registerIP, "rpcPort", rpcPort)
-		grpcOpt := grpc.WithTransportCredentials(insecure.NewCredentials())
-		rpcGracefulStop = make(chan struct{})
-		go func() {
-			<-ctx.Done()
-			rpcServer.GracefulStop()
-			close(rpcGracefulStop)
-		}()
-		if err := client.Register(ctx, rpcRegisterName, registerIP, rpcListener.Addr().(*net.TCPAddr).Port, grpcOpt); err != nil {
-			cancel(fmt.Errorf("rpc register %s %w", rpcRegisterName, err))
-			return
-		}
-
-		go func() {
-			err := rpcServer.Serve(rpcListener)
-			if err == nil {
-				err = fmt.Errorf("serve end")
-			}
-			cancel(fmt.Errorf("rpc %s %w", rpcRegisterName, err))
-		}()
-	}
-
-	err = rpcFn(ctx, config, client, &grpcServiceRegistrar{onRegisterService: onGrpcServiceRegistrar})
+	client.AddOption(mw.GrpcClient(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	registerIP, err := network.GetRpcRegisterIP(config.Config.Rpc.RegisterIP)
 	if err != nil {
 		return err
 	}
-	<-ctx.Done()
-	log.ZDebug(ctx, "cmd wait done", "err", context.Cause(ctx))
-	if rpcGracefulStop != nil {
-		timeout := time.NewTimer(time.Second * 15)
-		defer timeout.Stop()
-		select {
-		case <-timeout.C:
-			log.ZWarn(ctx, "rcp graceful stop timeout", nil)
-		case <-rpcGracefulStop:
-			log.ZDebug(ctx, "rcp graceful stop done")
-		}
-	}
-	return context.Cause(ctx)
-}
 
-func listenTCP(addr string) (net.Listener, int, error) {
-	listener, err := net.Listen("tcp", addr)
+	var reg *prometheus.Registry
+	var metric *grpcprometheus.ServerMetrics
+	if config.Config.Prometheus.Enable {
+		cusMetrics := prommetrics.GetGrpcCusMetrics(rpcRegisterName)
+		reg, metric, _ = prommetrics.NewGrpcPromObj(cusMetrics)
+		options = append(options, mw.GrpcServer(), grpc.StreamInterceptor(metric.StreamServerInterceptor()),
+			grpc.UnaryInterceptor(metric.UnaryServerInterceptor()))
+	} else {
+		options = append(options, mw.GrpcServer())
+	}
+
+	srv := grpc.NewServer(options...)
+	once := sync.Once{}
+	defer func() {
+		once.Do(srv.GracefulStop)
+	}()
+
+	err = rpcFn(client, srv)
 	if err != nil {
-		return nil, 0, errs.WrapMsg(err, "listen err", "addr", addr)
+		return utils.Wrap1(err)
 	}
-	return listener, listener.Addr().(*net.TCPAddr).Port, nil
-}
+	err = client.Register(
+		rpcRegisterName,
+		registerIP,
+		rpcPort,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return utils.Wrap1(err)
+	}
 
-func prommetricsUnaryInterceptor(rpcRegisterName string) grpc.ServerOption {
-	getCode := func(err error) int {
-		if err == nil {
-			return 0
+	var wg errgroup.Group
+
+	wg.Go(func() error {
+		if config.Config.Prometheus.Enable && prometheusPort != 0 {
+			metric.InitializeMetrics(srv)
+			// Create a HTTP server for prometheus.
+			httpServer := &http.Server{Handler: promhttp.HandlerFor(reg, promhttp.HandlerOpts{}), Addr: fmt.Sprintf("0.0.0.0:%d", prometheusPort)}
+			if err := httpServer.ListenAndServe(); err != nil {
+				log.Fatal("Unable to start a http server.")
+			}
 		}
-		rpcErr, ok := err.(interface{ GRPCStatus() *status.Status })
-		if !ok {
-			return -1
-		}
-		return int(rpcErr.GRPCStatus().Code())
-	}
-	return grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		resp, err := handler(ctx, req)
-		prommetrics.RPCCall(rpcRegisterName, info.FullMethod, getCode(err))
-		return resp, err
+		return nil
 	})
-}
 
-func prommetricsStreamInterceptor(rpcRegisterName string) grpc.ServerOption {
-	return grpc.ChainStreamInterceptor()
-}
+	wg.Go(func() error {
+		return utils.Wrap1(srv.Serve(listener))
+	})
 
-type grpcServiceRegistrar struct {
-	onRegisterService func(desc *grpc.ServiceDesc, impl any)
-}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	<-sigs
 
-func (x *grpcServiceRegistrar) RegisterService(desc *grpc.ServiceDesc, impl any) {
-	x.onRegisterService(desc, impl)
+	var (
+		done = make(chan struct{}, 1)
+		gerr error
+	)
+
+	go func() {
+		once.Do(srv.GracefulStop)
+		gerr = wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return gerr
+
+	case <-time.After(15 * time.Second):
+		return utils.Wrap1(errors.New("timeout exit"))
+	}
+
 }

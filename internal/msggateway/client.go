@@ -16,29 +16,31 @@ package msggateway
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
-	"time"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/protocol/sdkws"
-	"github.com/openimsdk/tools/apiresp"
-	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/log"
-	"github.com/openimsdk/tools/mcontext"
-	"github.com/openimsdk/tools/utils/stringutil"
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/protocol/sdkws"
+	"github.com/OpenIMSDK/tools/apiresp"
+	"github.com/OpenIMSDK/tools/log"
+	"github.com/OpenIMSDK/tools/mcontext"
+	"github.com/OpenIMSDK/tools/utils"
 )
 
 var (
-	ErrConnClosed                = errs.New("conn has closed")
-	ErrNotSupportMessageProtocol = errs.New("not support message protocol")
-	ErrClientClosed              = errs.New("client actively close the connection")
-	ErrPanic                     = errs.New("panic error")
+	ErrConnClosed                = errors.New("conn has closed")
+	ErrNotSupportMessageProtocol = errors.New("not support message protocol")
+	ErrClientClosed              = errors.New("client actively close the connection")
+	ErrPanic                     = errors.New("panic error")
 )
 
 const (
@@ -69,61 +71,50 @@ type Client struct {
 	IsCompress     bool   `json:"isCompress"`
 	UserID         string `json:"userID"`
 	IsBackground   bool   `json:"isBackground"`
-	SDKType        string `json:"sdkType"`
-	Encoder        Encoder
 	ctx            *UserConnContext
 	longConnServer LongConnServer
 	closed         atomic.Bool
 	closedErr      error
 	token          string
-	hbCtx          context.Context
-	hbCancel       context.CancelFunc
-	subLock        *sync.Mutex
-	subUserIDs     map[string]struct{} // client conn subscription list
+}
+
+func newClient(ctx *UserConnContext, conn LongConn, isCompress bool) *Client {
+	return &Client{
+		w:          new(sync.Mutex),
+		conn:       conn,
+		PlatformID: utils.StringToInt(ctx.GetPlatformID()),
+		IsCompress: isCompress,
+		UserID:     ctx.GetUserID(),
+		ctx:        ctx,
+	}
 }
 
 // ResetClient updates the client's state with new connection and context information.
-func (c *Client) ResetClient(ctx *UserConnContext, conn LongConn, longConnServer LongConnServer) {
+func (c *Client) ResetClient(
+	ctx *UserConnContext,
+	conn LongConn,
+	isBackground, isCompress bool,
+	longConnServer LongConnServer,
+	token string,
+) {
 	c.w = new(sync.Mutex)
 	c.conn = conn
-	c.PlatformID = stringutil.StringToInt(ctx.GetPlatformID())
-	c.IsCompress = ctx.GetCompression()
-	c.IsBackground = ctx.GetBackground()
+	c.PlatformID = utils.StringToInt(ctx.GetPlatformID())
+	c.IsCompress = isCompress
+	c.IsBackground = isBackground
 	c.UserID = ctx.GetUserID()
 	c.ctx = ctx
 	c.longConnServer = longConnServer
 	c.IsBackground = false
 	c.closed.Store(false)
 	c.closedErr = nil
-	c.token = ctx.GetToken()
-	c.SDKType = ctx.GetSDKType()
-	c.hbCtx, c.hbCancel = context.WithCancel(c.ctx)
-	c.subLock = new(sync.Mutex)
-	if c.subUserIDs != nil {
-		clear(c.subUserIDs)
-	}
-	if c.SDKType == GoSDK {
-		c.Encoder = NewGobEncoder()
-	} else {
-		c.Encoder = NewJsonEncoder()
-	}
-	c.subUserIDs = make(map[string]struct{})
+	c.token = token
 }
 
-func (c *Client) pingHandler(appData string) error {
-	if err := c.conn.SetReadDeadline(pongWait); err != nil {
-		return err
-	}
-
-	log.ZDebug(c.ctx, "ping Handler Success.", "appData", appData)
-	return c.writePongMsg(appData)
-}
-
-func (c *Client) pongHandler(_ string) error {
-	if err := c.conn.SetReadDeadline(pongWait); err != nil {
-		return err
-	}
-	return nil
+// pingHandler handles ping messages and sends pong responses.
+func (c *Client) pingHandler(_ string) error {
+	_ = c.conn.SetReadDeadline(pongWait)
+	return c.writePongMsg()
 }
 
 // readMessage continuously reads messages from the connection.
@@ -131,19 +122,16 @@ func (c *Client) readMessage() {
 	defer func() {
 		if r := recover(); r != nil {
 			c.closedErr = ErrPanic
-			log.ZPanic(c.ctx, "socket have panic err:", errs.ErrPanic(r))
+			fmt.Println("socket have panic err:", r, string(debug.Stack()))
 		}
 		c.close()
 	}()
 
 	c.conn.SetReadLimit(maxMessageSize)
 	_ = c.conn.SetReadDeadline(pongWait)
-	c.conn.SetPongHandler(c.pongHandler)
 	c.conn.SetPingHandler(c.pingHandler)
-	c.activeHeartbeat(c.hbCtx)
 
 	for {
-		log.ZDebug(c.ctx, "readMessage")
 		messageType, message, returnErr := c.conn.ReadMessage()
 		if returnErr != nil {
 			log.ZWarn(c.ctx, "readMessage", returnErr, "messageType", messageType)
@@ -152,8 +140,7 @@ func (c *Client) readMessage() {
 		}
 
 		log.ZDebug(c.ctx, "readMessage", "messageType", messageType)
-		if c.closed.Load() {
-			// The scenario where the connection has just been closed, but the coroutine has not exited
+		if c.closed.Load() { // 连接刚置位已经关闭，但是协程还没退出的场景
 			c.closedErr = ErrConnClosed
 			return
 		}
@@ -167,20 +154,16 @@ func (c *Client) readMessage() {
 				return
 			}
 		case MessageText:
-			_ = c.conn.SetReadDeadline(pongWait)
-			parseDataErr := c.handlerTextMessage(message)
-			if parseDataErr != nil {
-				c.closedErr = parseDataErr
-				return
-			}
+			c.closedErr = ErrNotSupportMessageProtocol
+			return
+
 		case PingMessage:
-			err := c.writePongMsg("")
+			err := c.writePongMsg()
 			log.ZError(c.ctx, "writePongMsg", err)
 
 		case CloseMessage:
 			c.closedErr = ErrClientClosed
 			return
-
 		default:
 		}
 	}
@@ -192,24 +175,24 @@ func (c *Client) handleMessage(message []byte) error {
 		var err error
 		message, err = c.longConnServer.DecompressWithPool(message)
 		if err != nil {
-			return errs.Wrap(err)
+			return utils.Wrap(err, "")
 		}
 	}
 
 	var binaryReq = getReq()
 	defer freeReq(binaryReq)
 
-	err := c.Encoder.Decode(message, binaryReq)
+	err := c.longConnServer.Decode(message, binaryReq)
 	if err != nil {
-		return err
+		return utils.Wrap(err, "")
 	}
 
 	if err := c.longConnServer.Validate(binaryReq); err != nil {
-		return err
+		return utils.Wrap(err, "")
 	}
 
 	if binaryReq.SendID != c.UserID {
-		return errs.New("exception conn userID not same to req userID", "binaryReq", binaryReq.String())
+		return utils.Wrap(errors.New("exception conn userID not same to req userID"), binaryReq.String())
 	}
 
 	ctx := mcontext.WithMustInfoCtx(
@@ -232,18 +215,10 @@ func (c *Client) handleMessage(message []byte) error {
 		resp, messageErr = c.longConnServer.SendSignalMessage(ctx, binaryReq)
 	case WSPullMsgBySeqList:
 		resp, messageErr = c.longConnServer.PullMessageBySeqList(ctx, binaryReq)
-	case WSPullMsg:
-		resp, messageErr = c.longConnServer.GetSeqMessage(ctx, binaryReq)
-	case WSGetConvMaxReadSeq:
-		resp, messageErr = c.longConnServer.GetConversationsHasReadAndMaxSeq(ctx, binaryReq)
-	case WsPullConvLastMessage:
-		resp, messageErr = c.longConnServer.GetLastMessage(ctx, binaryReq)
 	case WsLogoutMsg:
 		resp, messageErr = c.longConnServer.UserLogout(ctx, binaryReq)
 	case WsSetBackgroundStatus:
 		resp, messageErr = c.setAppBackgroundStatus(ctx, binaryReq)
-	case WsSubUserOnlineStatus:
-		resp, messageErr = c.longConnServer.SubUserOnlineStatus(ctx, c, binaryReq)
 	default:
 		return fmt.Errorf(
 			"ReqIdentifier failed,sendID:%s,msgIncr:%s,reqIdentifier:%d",
@@ -263,19 +238,20 @@ func (c *Client) setAppBackgroundStatus(ctx context.Context, req *Req) ([]byte, 
 	}
 
 	c.IsBackground = isBackground
-	// TODO: callback
+	// todo callback
 	return resp, nil
 }
 
 func (c *Client) close() {
-	c.w.Lock()
-	defer c.w.Unlock()
 	if c.closed.Load() {
 		return
 	}
+
+	c.w.Lock()
+	defer c.w.Unlock()
+
 	c.closed.Store(true)
 	c.conn.Close()
-	c.hbCancel() // Close server-initiated heartbeat.
 	c.longConnServer.UnRegister(c)
 }
 
@@ -289,16 +265,14 @@ func (c *Client) replyMessage(ctx context.Context, binaryReq *Req, err error, re
 		ErrMsg:        errResp.ErrMsg,
 		Data:          resp,
 	}
-	t := time.Now()
 	log.ZDebug(ctx, "gateway reply message", "resp", mReply.String())
 	err = c.writeBinaryMsg(mReply)
 	if err != nil {
 		log.ZWarn(ctx, "wireBinaryMsg replyMessage", err, "resp", mReply.String())
 	}
-	log.ZDebug(ctx, "wireBinaryMsg end", "time cost", time.Since(t))
 
 	if binaryReq.ReqIdentifier == WsLogoutMsg {
-		return errs.New("user logout", "operationID", binaryReq.OperationID).Wrap()
+		return errors.New("user logout")
 	}
 	return nil
 }
@@ -329,15 +303,19 @@ func (c *Client) KickOnlineMessage() error {
 	resp := Resp{
 		ReqIdentifier: WSKickOnlineMsg,
 	}
-	log.ZDebug(c.ctx, "KickOnlineMessage debug ")
 	err := c.writeBinaryMsg(resp)
 	c.close()
 	return err
 }
-
-func (c *Client) PushUserOnlineStatus(data []byte) error {
+func (c *Client) ServerConfigMessage(ctx context.Context) error {
+	msg := sdkws.ServerConfig{IsEncryption: config.Config.LongConnSvr.IsEncryption}
+	data, err := proto.Marshal(&msg)
+	if err != nil {
+		return err
+	}
 	resp := Resp{
-		ReqIdentifier: WsSubUserOnlineStatus,
+		ReqIdentifier: WSServerConfigMsg,
+		OperationID:   mcontext.GetOperationID(ctx),
 		Data:          data,
 	}
 	return c.writeBinaryMsg(resp)
@@ -348,23 +326,19 @@ func (c *Client) writeBinaryMsg(resp Resp) error {
 		return nil
 	}
 
-	encodedBuf, err := c.Encoder.Encode(resp)
+	encodedBuf, err := c.longConnServer.Encode(resp)
 	if err != nil {
-		return err
+		return utils.Wrap(err, "")
 	}
 
 	c.w.Lock()
 	defer c.w.Unlock()
 
-	err = c.conn.SetWriteDeadline(writeWait)
-	if err != nil {
-		return err
-	}
-
+	_ = c.conn.SetWriteDeadline(writeWait)
 	if c.IsCompress {
 		resultBuf, compressErr := c.longConnServer.CompressWithPool(encodedBuf)
 		if compressErr != nil {
-			return compressErr
+			return utils.Wrap(compressErr, "")
 		}
 		return c.conn.WriteMessage(MessageBinary, resultBuf)
 	}
@@ -372,34 +346,7 @@ func (c *Client) writeBinaryMsg(resp Resp) error {
 	return c.conn.WriteMessage(MessageBinary, encodedBuf)
 }
 
-// Actively initiate Heartbeat when platform in Web.
-func (c *Client) activeHeartbeat(ctx context.Context) {
-	if c.PlatformID == constant.WebPlatformID {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.ZPanic(ctx, "activeHeartbeat Panic", errs.ErrPanic(r))
-				}
-			}()
-			log.ZDebug(ctx, "server initiative send heartbeat start.")
-			ticker := time.NewTicker(pingPeriod)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-ticker.C:
-					if err := c.writePingMsg(); err != nil {
-						log.ZWarn(c.ctx, "send Ping Message error.", err)
-						return
-					}
-				case <-c.hbCtx.Done():
-					return
-				}
-			}
-		}()
-	}
-}
-func (c *Client) writePingMsg() error {
+func (c *Client) writePongMsg() error {
 	if c.closed.Load() {
 		return nil
 	}
@@ -409,56 +356,8 @@ func (c *Client) writePingMsg() error {
 
 	err := c.conn.SetWriteDeadline(writeWait)
 	if err != nil {
-		return err
+		return utils.Wrap(err, "")
 	}
 
-	return c.conn.WriteMessage(PingMessage, nil)
-}
-
-func (c *Client) writePongMsg(appData string) error {
-	log.ZDebug(c.ctx, "write Pong Msg in Server", "appData", appData)
-	if c.closed.Load() {
-		log.ZWarn(c.ctx, "is closed in server", nil, "appdata", appData, "closed err", c.closedErr)
-		return nil
-	}
-
-	c.w.Lock()
-	defer c.w.Unlock()
-
-	err := c.conn.SetWriteDeadline(writeWait)
-	if err != nil {
-		log.ZWarn(c.ctx, "SetWriteDeadline in Server have error", errs.Wrap(err), "writeWait", writeWait, "appData", appData)
-		return errs.Wrap(err)
-	}
-	err = c.conn.WriteMessage(PongMessage, []byte(appData))
-	if err != nil {
-		log.ZWarn(c.ctx, "Write Message have error", errs.Wrap(err), "Pong msg", PongMessage)
-	}
-
-	return errs.Wrap(err)
-}
-
-func (c *Client) handlerTextMessage(b []byte) error {
-	var msg TextMessage
-	if err := json.Unmarshal(b, &msg); err != nil {
-		return err
-	}
-	switch msg.Type {
-	case TextPong:
-		return nil
-	case TextPing:
-		msg.Type = TextPong
-		msgData, err := json.Marshal(msg)
-		if err != nil {
-			return err
-		}
-		c.w.Lock()
-		defer c.w.Unlock()
-		if err := c.conn.SetWriteDeadline(writeWait); err != nil {
-			return err
-		}
-		return c.conn.WriteMessage(MessageText, msgData)
-	default:
-		return fmt.Errorf("not support message type %s", msg.Type)
-	}
+	return c.conn.WriteMessage(PongMessage, nil)
 }

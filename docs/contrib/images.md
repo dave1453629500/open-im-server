@@ -26,7 +26,6 @@ We provide multiple versions of our images to meet different project requirement
 1. `main`: This image corresponds to the latest version of the main branch in OpenIM. It is updated frequently, making it perfect for users who want to stay at the cutting edge of our features.
 2. `release-v3.*`: This is the image that corresponds to the latest version of OpenIM's stable release branch. It's ideal for users who prefer a balance between new features and stability.
 3. `v3.*.*`: These images are specific to each tag in OpenIM. They are preserved in their original state and are never overwritten. These are the go-to images for users who need a specific, unchanging version of OpenIM.
-4. The image versions adhere to Semantic Versioning 2.0.0 strategy. Taking the `openim-server` image as an example, available at [openim-server container package](https://github.com/openimsdk/open-im-server/pkgs/container/openim-server): upon tagging with v3.5.0, the CI automatically releases the following tags - `openim-server:3`, `openim-server:3.5`, `openim-server:3.5.0`, `openim-server:v3.5.0`, `openim-server:latest`, and `sha-e0244d9`. It's important to note that only `sha-e0244d9` is absolutely unique, whereas `openim-server:v3.5.0` and `openim-server:3.5.0` maintain a degree of uniqueness.
 
 ### Multi-Architecture Images
 
@@ -96,21 +95,4 @@ When pulling OpenIM's Docker images, you can choose the most suitable source bas
 
 3. Run the `docker images` command to confirm that the image has been successfully pulled.
 
-### Accelerating Deployment for Users in China with Aliyun Mirror or Alternative Image Addresses
-
-For users in China looking to speed up the deployment process of OpenIM, leveraging a mirror image address is a highly recommended practice. After executing the `make init` command, a `.env` file is generated, which you'll need to edit to configure the image registry source. This configuration is crucial for optimizing download speeds and ensuring a smoother setup process.
-
-Within the generated `.env` file, you'll find a section dedicated to choosing the image address. It includes options for GitHub (`ghcr.io/openimsdk`), Docker Hub (`openim`), and Ali Cloud (`registry.cn-hangzhou.aliyuncs.com/openimsdk`). To achieve the best performance within China, it is advised to use the Aliyun image address. 
-
-To do this, you need to comment out the current `IMAGE_REGISTRY` setting and uncomment the Aliyun option. Here is how you can adjust it for Aliyun:
-
-```bash
-# Choose the image address: GitHub (ghcr.io/openimsdk), Docker Hub (openim), 
-# or Ali Cloud (registry.cn-hangzhou.aliyuncs.com/openimsdk).
-# Uncomment one of the following three options. Aliyun is recommended for users in China.
-# IMAGE_REGISTRY="ghcr.io/openimsdk"
-# IMAGE_REGISTRY="openim"
-IMAGE_REGISTRY="registry.cn-hangzhou.aliyuncs.com/openimsdk"
-```
-
-This change directs the deployment process to fetch the required images from the Aliyun registry, significantly improving download and installation speeds due to the geographical and network advantages within China. If, for any reason, you prefer not to use Aliyun or encounter issues, consider switching to another mirror address listed in the `.env` file by following the same uncommenting process. This flexibility ensures that users can select the most suitable image source for their specific situation, leading to a more efficient deployment of OpenIM.
+This concludes OpenIM's image management strategy and the steps for pulling images. If you have any questions, please feel free to ask.

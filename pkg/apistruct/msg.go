@@ -14,8 +14,6 @@
 
 package apistruct
 
-import "github.com/openimsdk/protocol/sdkws"
-
 type PictureBaseInfo struct {
 	UUID   string `mapstructure:"uuid"`
 	Type   string `mapstructure:"type"   validate:"required"`
@@ -31,7 +29,6 @@ type PictureElem struct {
 	BigPicture      PictureBaseInfo `mapstructure:"bigPicture"      validate:"required"`
 	SnapshotPicture PictureBaseInfo `mapstructure:"snapshotPicture" validate:"required"`
 }
-
 type SoundElem struct {
 	UUID      string `mapstructure:"uuid"`
 	SoundPath string `mapstructure:"soundPath"`
@@ -39,7 +36,6 @@ type SoundElem struct {
 	DataSize  int64  `mapstructure:"dataSize"`
 	Duration  int64  `mapstructure:"duration"  validate:"required,min=1"`
 }
-
 type VideoElem struct {
 	VideoPath      string `mapstructure:"videoPath"`
 	VideoUUID      string `mapstructure:"videoUUID"`
@@ -54,7 +50,6 @@ type VideoElem struct {
 	SnapshotWidth  int32  `mapstructure:"snapshotWidth"  validate:"required"`
 	SnapshotHeight int32  `mapstructure:"snapshotHeight" validate:"required"`
 }
-
 type FileElem struct {
 	FilePath  string `mapstructure:"filePath"`
 	UUID      string `mapstructure:"uuid"`
@@ -72,7 +67,6 @@ type LocationElem struct {
 	Longitude   float64 `mapstructure:"longitude"   validate:"required"`
 	Latitude    float64 `mapstructure:"latitude"    validate:"required"`
 }
-
 type CustomElem struct {
 	Data        string `mapstructure:"data"        validate:"required"`
 	Description string `mapstructure:"description"`
@@ -83,18 +77,8 @@ type TextElem struct {
 	Content string `json:"content" validate:"required"`
 }
 
-type StreamMsgElem struct {
-	Type    string `mapstructure:"type" validate:"required"`
-	Content string `mapstructure:"content" validate:"required"`
-}
-
 type RevokeElem struct {
 	RevokeMsgClientID string `mapstructure:"revokeMsgClientID" validate:"required"`
-}
-
-type QuoteElem struct {
-	Text         string     `json:"text,omitempty"`
-	QuoteMessage *MsgStruct `json:"quoteMessage,omitempty"`
 }
 
 type OANotificationElem struct {
@@ -103,14 +87,13 @@ type OANotificationElem struct {
 	NotificationType    int32        `mapstructure:"notificationType"    json:"notificationType"    validate:"required"`
 	Text                string       `mapstructure:"text"                json:"text"                validate:"required"`
 	Url                 string       `mapstructure:"url"                 json:"url"`
-	MixType             int32        `mapstructure:"mixType"             json:"mixType"             validate:"gte=0,lte=5"`
+	MixType             int32        `mapstructure:"mixType"             json:"mixType"`
 	PictureElem         *PictureElem `mapstructure:"pictureElem"         json:"pictureElem"`
 	SoundElem           *SoundElem   `mapstructure:"soundElem"           json:"soundElem"`
 	VideoElem           *VideoElem   `mapstructure:"videoElem"           json:"videoElem"`
 	FileElem            *FileElem    `mapstructure:"fileElem"            json:"fileElem"`
 	Ex                  string       `mapstructure:"ex"                  json:"ex"`
 }
-
 type MessageRevoked struct {
 	RevokerID       string `mapstructure:"revokerID"       json:"revokerID"       validate:"required"`
 	RevokerRole     int32  `mapstructure:"revokerRole"     json:"revokerRole"     validate:"required"`
@@ -118,39 +101,4 @@ type MessageRevoked struct {
 	RevokerNickname string `mapstructure:"revokerNickname" json:"revokerNickname"`
 	SessionType     int32  `mapstructure:"sessionType"     json:"sessionType"     validate:"required"`
 	Seq             uint32 `mapstructure:"seq"             json:"seq"             validate:"required"`
-}
-
-type MsgStruct struct {
-	ClientMsgID          string                 `json:"clientMsgID,omitempty"`
-	ServerMsgID          string                 `json:"serverMsgID,omitempty"`
-	CreateTime           int64                  `json:"createTime"`
-	SendTime             int64                  `json:"sendTime"`
-	SessionType          int32                  `json:"sessionType"`
-	SendID               string                 `json:"sendID,omitempty"`
-	RecvID               string                 `json:"recvID,omitempty"`
-	MsgFrom              int32                  `json:"msgFrom"`
-	ContentType          int32                  `json:"contentType"`
-	SenderPlatformID     int32                  `json:"senderPlatformID"`
-	SenderNickname       string                 `json:"senderNickname,omitempty"`
-	SenderFaceURL        string                 `json:"senderFaceUrl,omitempty"`
-	GroupID              string                 `json:"groupID,omitempty"`
-	Content              string                 `json:"content,omitempty"`
-	Seq                  int64                  `json:"seq"`
-	IsRead               bool                   `json:"isRead"`
-	Status               int32                  `json:"status"`
-	IsReact              bool                   `json:"isReact,omitempty"`
-	IsExternalExtensions bool                   `json:"isExternalExtensions,omitempty"`
-	OfflinePush          *sdkws.OfflinePushInfo `json:"offlinePush,omitempty"`
-	AttachedInfo         string                 `json:"attachedInfo,omitempty"`
-	Ex                   string                 `json:"ex,omitempty"`
-	LocalEx              string                 `json:"localEx,omitempty"`
-	TextElem             *TextElem              `json:"textElem,omitempty"`
-	PictureElem          *PictureElem           `json:"pictureElem,omitempty"`
-	SoundElem            *SoundElem             `json:"soundElem,omitempty"`
-	VideoElem            *VideoElem             `json:"videoElem,omitempty"`
-	FileElem             *FileElem              `json:"fileElem,omitempty"`
-	AtTextElem           *AtElem                `json:"atTextElem,omitempty"`
-	LocationElem         *LocationElem          `json:"locationElem,omitempty"`
-	CustomElem           *CustomElem            `json:"customElem,omitempty"`
-	QuoteElem            *QuoteElem             `json:"quoteElem,omitempty"`
 }

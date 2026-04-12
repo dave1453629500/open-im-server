@@ -20,6 +20,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -33,9 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/openimsdk/tools/errs"
-
-	"github.com/openimsdk/protocol/third"
+	"github.com/OpenIMSDK/protocol/third"
 )
 
 type Upload struct {
@@ -96,7 +95,7 @@ func (m *Manage) Run() error {
 	}
 	var err error
 	ctx := context.WithValue(m.ctx, "operationID", fmt.Sprintf("%s_init", m.prefix))
-	m.api.Token, err = m.api.GetAdminToken(ctx)
+	m.api.Token, err = m.api.GetToken(ctx)
 	if err != nil {
 		return err
 	}
@@ -235,7 +234,7 @@ func (m *Manage) RunTask(ctx context.Context, task Task) (string, error) {
 	}
 	for i, currentPartSize := range part.PartSizes {
 		md5Reader := NewMd5Reader(io.LimitReader(reader, currentPartSize))
-		if err := m.doPut(ctx, m.api.Client, initiateMultipartUploadResp.Upload.Sign, uploadParts[i], md5Reader, currentPartSize); err != nil {
+		if m.doPut(ctx, m.api.Client, initiateMultipartUploadResp.Upload.Sign, uploadParts[i], md5Reader, currentPartSize); err != nil {
 			return "", err
 		}
 		if md5val := md5Reader.Md5(); md5val != part.PartMd5s[i] {
@@ -257,10 +256,10 @@ func (m *Manage) RunTask(ctx context.Context, task Task) (string, error) {
 
 func (m *Manage) partSize(size int64) (int64, error) {
 	if size <= 0 {
-		return 0, errs.New("size must be greater than 0")
+		return 0, errors.New("size must be greater than 0")
 	}
 	if size > m.partLimit.MaxPartSize*int64(m.partLimit.MaxNumSize) {
-		return 0, errs.New("size must be less than", "size", m.partLimit.MaxPartSize*int64(m.partLimit.MaxNumSize))
+		return 0, fmt.Errorf("size must be less than %db", m.partLimit.MaxPartSize*int64(m.partLimit.MaxNumSize))
 	}
 	if size <= m.partLimit.MinPartSize*int64(m.partLimit.MaxNumSize) {
 		return m.partLimit.MinPartSize, nil
@@ -393,7 +392,7 @@ func (m *Manage) HttpGet(ctx context.Context, url string) (*http.Response, error
 		}
 		if response.StatusCode != http.StatusOK {
 			_ = response.Body.Close()
-			return nil, fmt.Errorf("webhook get %s status %s", url, response.Status)
+			return nil, fmt.Errorf("http get %s status %s", url, response.Status)
 		}
 		return response, nil
 	}

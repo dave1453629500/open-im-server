@@ -14,10 +14,7 @@
 
 package callbackstruct
 
-import (
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
-	"github.com/openimsdk/tools/errs"
-)
+import "github.com/OpenIMSDK/tools/errs"
 
 const (
 	Next = 1
@@ -35,7 +32,6 @@ type CommonCallbackReq struct {
 	MsgFrom          int32    `json:"msgFrom"`
 	ContentType      int32    `json:"contentType"`
 	Status           int32    `json:"status"`
-	SendTime         int64    `json:"sendTime"`
 	CreateTime       int64    `json:"createTime"`
 	Content          string   `json:"content"`
 	Seq              uint32   `json:"seq"`
@@ -65,9 +61,10 @@ type CommonCallbackResp struct {
 }
 
 func (c CommonCallbackResp) Parse() error {
-	if c.ActionCode == servererrs.NoError && c.NextCode == Next {
+	if c.ActionCode != errs.NoError || c.NextCode == Next {
 		return errs.NewCodeError(int(c.ErrCode), c.ErrMsg).WithDetail(c.ErrDlt)
 	}
+
 	return nil
 }
 

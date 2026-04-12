@@ -15,61 +15,55 @@
 package cmd
 
 import (
-	"context"
+	"fmt"
+
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/spf13/cobra"
+
+	config2 "github.com/openimsdk/open-im-server/v3/pkg/common/config"
 
 	"github.com/openimsdk/open-im-server/v3/internal/msgtransfer"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/startrpc"
-	"github.com/openimsdk/open-im-server/v3/version"
-	"github.com/openimsdk/tools/system/program"
-	"github.com/spf13/cobra"
 )
 
 type MsgTransferCmd struct {
 	*RootCmd
-	ctx               context.Context
-	configMap         map[string]any
-	msgTransferConfig *msgtransfer.Config
 }
 
 func NewMsgTransferCmd() *MsgTransferCmd {
-	var msgTransferConfig msgtransfer.Config
-	ret := &MsgTransferCmd{msgTransferConfig: &msgTransferConfig}
-	ret.configMap = map[string]any{
-		config.OpenIMMsgTransferCfgFileName: &msgTransferConfig.MsgTransfer,
-		config.RedisConfigFileName:          &msgTransferConfig.RedisConfig,
-		config.MongodbConfigFileName:        &msgTransferConfig.MongodbConfig,
-		config.KafkaConfigFileName:          &msgTransferConfig.KafkaConfig,
-		config.ShareFileName:                &msgTransferConfig.Share,
-		config.WebhooksConfigFileName:       &msgTransferConfig.WebhooksConfig,
-		config.DiscoveryConfigFilename:      &msgTransferConfig.Discovery,
-	}
-	ret.RootCmd = NewRootCmd(program.GetProcessName(), WithConfigMap(ret.configMap))
-	ret.ctx = context.WithValue(context.Background(), "version", version.Version)
-	ret.Command.RunE = func(cmd *cobra.Command, args []string) error {
-		return ret.runE()
-	}
+	ret := &MsgTransferCmd{NewRootCmd("msgTransfer")}
+	ret.SetRootCmdPt(ret)
 	return ret
 }
 
+func (m *MsgTransferCmd) addRunE() {
+	m.Command.RunE = func(cmd *cobra.Command, args []string) error {
+		return msgtransfer.StartTransfer(m.getPrometheusPortFlag(cmd))
+	}
+}
+
 func (m *MsgTransferCmd) Exec() error {
+	m.addRunE()
 	return m.Execute()
 }
 
-func (m *MsgTransferCmd) runE() error {
-	m.msgTransferConfig.Index = config.Index(m.Index())
-	var prometheus config.Prometheus
-	return startrpc.Start(
-		m.ctx, &m.msgTransferConfig.Discovery,
-		&prometheus,
-		"", "",
-		true,
-		nil, int(m.msgTransferConfig.Index),
-		"",
-		nil,
-		m.msgTransferConfig,
-		[]string{},
-		[]string{},
-		msgtransfer.Start,
-	)
+func (m *MsgTransferCmd) GetPortFromConfig(portType string) int {
+	fmt.Println("GetPortFromConfig:", portType)
+	if portType == constant.FlagPort {
+		return 0
+	} else if portType == constant.FlagPrometheusPort {
+		n := m.getTransferProgressFlagValue()
+		return config2.Config.Prometheus.MessageTransferPrometheusPort[n]
+	}
+	return 0
+}
+func (m *MsgTransferCmd) AddTransferProgressFlag() {
+	m.Command.Flags().IntP(constant.FlagTransferProgressIndex, "n", 0, "transfer progress index")
+}
+func (m *MsgTransferCmd) getTransferProgressFlagValue() int {
+	nindex, err := m.Command.Flags().GetInt(constant.FlagTransferProgressIndex)
+	if err != nil {
+		fmt.Println("get transfercmd error,make sure it is k8s env or not")
+		return 0
+	}
+	return nindex
 }

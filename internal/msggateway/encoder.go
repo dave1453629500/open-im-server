@@ -17,9 +17,8 @@ package msggateway
 import (
 	"bytes"
 	"encoding/gob"
-	"encoding/json"
 
-	"github.com/openimsdk/tools/errs"
+	"github.com/OpenIMSDK/tools/utils"
 )
 
 type Encoder interface {
@@ -29,46 +28,26 @@ type Encoder interface {
 
 type GobEncoder struct{}
 
-func NewGobEncoder() Encoder {
-	return GobEncoder{}
+func NewGobEncoder() *GobEncoder {
+	return &GobEncoder{}
 }
 
-func (g GobEncoder) Encode(data any) ([]byte, error) {
-	var buff bytes.Buffer
+func (g *GobEncoder) Encode(data any) ([]byte, error) {
+	buff := bytes.Buffer{}
 	enc := gob.NewEncoder(&buff)
-	if err := enc.Encode(data); err != nil {
-		return nil, errs.WrapMsg(err, "GobEncoder.Encode failed", "action", "encode")
+	err := enc.Encode(data)
+	if err != nil {
+		return nil, err
 	}
 	return buff.Bytes(), nil
 }
 
-func (g GobEncoder) Decode(encodeData []byte, decodeData any) error {
+func (g *GobEncoder) Decode(encodeData []byte, decodeData any) error {
 	buff := bytes.NewBuffer(encodeData)
 	dec := gob.NewDecoder(buff)
-	if err := dec.Decode(decodeData); err != nil {
-		return errs.WrapMsg(err, "GobEncoder.Decode failed", "action", "decode")
-	}
-	return nil
-}
-
-type JsonEncoder struct{}
-
-func NewJsonEncoder() Encoder {
-	return JsonEncoder{}
-}
-
-func (g JsonEncoder) Encode(data any) ([]byte, error) {
-	b, err := json.Marshal(data)
+	err := dec.Decode(decodeData)
 	if err != nil {
-		return nil, errs.New("JsonEncoder.Encode failed", "action", "encode")
-	}
-	return b, nil
-}
-
-func (g JsonEncoder) Decode(encodeData []byte, decodeData any) error {
-	err := json.Unmarshal(encodeData, decodeData)
-	if err != nil {
-		return errs.New("JsonEncoder.Decode failed", "action", "decode")
+		return utils.Wrap(err, "")
 	}
 	return nil
 }

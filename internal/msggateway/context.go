@@ -15,16 +15,13 @@
 package msggateway
 
 import (
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
 
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/tools/utils/encrypt"
-	"github.com/openimsdk/tools/utils/stringutil"
-	"github.com/openimsdk/tools/utils/timeutil"
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/tools/utils"
 )
 
 type UserConnContext struct {
@@ -57,7 +54,7 @@ func (c *UserConnContext) Value(key any) any {
 	case constant.ConnID:
 		return c.GetConnID()
 	case constant.OpUserPlatform:
-		return constant.PlatformIDToName(stringutil.StringToInt(c.GetPlatformID()))
+		return constant.PlatformIDToName(utils.StringToInt(c.GetPlatformID()))
 	case constant.RemoteAddr:
 		return c.RemoteAddr
 	default:
@@ -66,17 +63,13 @@ func (c *UserConnContext) Value(key any) any {
 }
 
 func newContext(respWriter http.ResponseWriter, req *http.Request) *UserConnContext {
-	remoteAddr := req.RemoteAddr
-	if forwarded := req.Header.Get("X-Forwarded-For"); forwarded != "" {
-		remoteAddr += "_" + forwarded
-	}
 	return &UserConnContext{
 		RespWriter: respWriter,
 		Req:        req,
 		Path:       req.URL.Path,
 		Method:     req.Method,
-		RemoteAddr: remoteAddr,
-		ConnID:     encrypt.Md5(req.RemoteAddr + "_" + strconv.Itoa(int(timeutil.GetCurrentTimestampByMill()))),
+		RemoteAddr: req.RemoteAddr,
+		ConnID:     utils.Md5(req.RemoteAddr + "_" + strconv.Itoa(int(utils.GetCurrentTimestampByMill()))),
 	}
 }
 
@@ -140,40 +133,6 @@ func (c *UserConnContext) GetToken() string {
 	return c.Req.URL.Query().Get(Token)
 }
 
-func (c *UserConnContext) GetCompression() bool {
-	compression, exists := c.Query(Compression)
-	if exists && compression == GzipCompressionProtocol {
-		return true
-	} else {
-		compression, exists := c.GetHeader(Compression)
-		if exists && compression == GzipCompressionProtocol {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *UserConnContext) GetSDKType() string {
-	sdkType := c.Req.URL.Query().Get(SDKType)
-	if sdkType == "" {
-		sdkType = GoSDK
-	}
-	return sdkType
-}
-
-func (c *UserConnContext) ShouldSendResp() bool {
-	errResp, exists := c.Query(SendResponse)
-	if exists {
-		b, err := strconv.ParseBool(errResp)
-		if err != nil {
-			return false
-		} else {
-			return b
-		}
-	}
-	return false
-}
-
 func (c *UserConnContext) SetToken(token string) {
 	c.Req.URL.RawQuery = Token + "=" + token
 }
@@ -182,30 +141,7 @@ func (c *UserConnContext) GetBackground() bool {
 	b, err := strconv.ParseBool(c.Req.URL.Query().Get(BackgroundStatus))
 	if err != nil {
 		return false
+	} else {
+		return b
 	}
-	return b
-}
-func (c *UserConnContext) ParseEssentialArgs() error {
-	_, exists := c.Query(Token)
-	if !exists {
-		return servererrs.ErrConnArgsErr.WrapMsg("token is empty")
-	}
-	_, exists = c.Query(WsUserID)
-	if !exists {
-		return servererrs.ErrConnArgsErr.WrapMsg("sendID is empty")
-	}
-	platformIDStr, exists := c.Query(PlatformID)
-	if !exists {
-		return servererrs.ErrConnArgsErr.WrapMsg("platformID is empty")
-	}
-	_, err := strconv.Atoi(platformIDStr)
-	if err != nil {
-		return servererrs.ErrConnArgsErr.WrapMsg("platformID is not int")
-	}
-	switch sdkType, _ := c.Query(SDKType); sdkType {
-	case "", GoSDK, JsSDK:
-	default:
-		return servererrs.ErrConnArgsErr.WrapMsg("sdkType is not go or js")
-	}
-	return nil
 }

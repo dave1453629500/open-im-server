@@ -15,14 +15,11 @@
 package cmd
 
 import (
-	"math"
 	"testing"
 
-	"github.com/openimsdk/protocol/auth"
-	"github.com/openimsdk/tools/apiresp"
-	"github.com/openimsdk/tools/utils/jsonutil"
+	"github.com/OpenIMSDK/protocol/constant"
 	"github.com/stretchr/testify/mock"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"gotest.tools/assert"
 )
 
 // MockRootCmd is a mock type for the RootCmd type
@@ -35,35 +32,20 @@ func (m *MockRootCmd) Execute() error {
 	return args.Error(0)
 }
 
-func TestName(t *testing.T) {
-	resp := &apiresp.ApiResponse{
-		ErrCode: 1234,
-		ErrMsg:  "test",
-		ErrDlt:  "4567",
-		Data: &auth.GetUserTokenResp{
-			Token:             "1234567",
-			ExpireTimeSeconds: math.MaxInt64,
-		},
+func TestMsgGatewayCmd_GetPortFromConfig(t *testing.T) {
+	msgGatewayCmd := &MsgGatewayCmd{RootCmd: &RootCmd{}}
+	tests := []struct {
+		portType string
+		want     int
+	}{
+		{constant.FlagWsPort, 8080}, // Replace 8080 with the expected port from the config
+		{constant.FlagPort, 8081},   // Replace 8081 with the expected port from the config
+		{"invalid", 0},
 	}
-	data, err := resp.MarshalJSON()
-	if err != nil {
-		panic(err)
+	for _, tt := range tests {
+		t.Run(tt.portType, func(t *testing.T) {
+			got := msgGatewayCmd.GetPortFromConfig(tt.portType)
+			assert.Equal(t, tt.want, got)
+		})
 	}
-	t.Log(string(data))
-
-	var rReso apiresp.ApiResponse
-	rReso.Data = &auth.GetUserTokenResp{}
-
-	if err := jsonutil.JsonUnmarshal(data, &rReso); err != nil {
-		panic(err)
-	}
-
-	t.Logf("%+v\n", rReso)
-
-}
-
-func TestName1(t *testing.T) {
-	t.Log(primitive.NewObjectID().String())
-	t.Log(primitive.NewObjectID().Hex())
-
 }

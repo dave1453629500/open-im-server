@@ -15,7 +15,7 @@
 package apistruct
 
 import (
-	"github.com/openimsdk/protocol/sdkws"
+	sdkws "github.com/OpenIMSDK/protocol/sdkws"
 )
 
 // SendMsg defines the structure for sending messages with various metadata.
@@ -55,9 +55,6 @@ type SendMsg struct {
 
 	// OfflinePushInfo contains information for offline push notifications.
 	OfflinePushInfo *sdkws.OfflinePushInfo `json:"offlinePushInfo"`
-
-	// Ex stores extended fields
-	Ex string `json:"ex"`
 }
 
 // SendMsgReq extends SendMsg with the requirement of RecvID when SessionType indicates a one-on-one or notification chat.
@@ -109,21 +106,6 @@ type BatchSendMsgResp struct {
 
 	// FailedIDs is a slice of user IDs for whom the message send failed.
 	FailedIDs []string `json:"failedUserIDs"`
-}
-
-// SendSingleMsgReq defines the structure for sending a message to multiple recipients.
-type SendSingleMsgReq struct {
-	// groupMsg should appoint sendID
-	SendID          string                 `json:"sendID"`
-	Content         string                 `json:"content" binding:"required"`
-	OfflinePushInfo *sdkws.OfflinePushInfo `json:"offlinePushInfo"`
-	Ex              string                 `json:"ex"`
-}
-
-type KeyMsgData struct {
-	SendID  string `json:"sendID"`
-	RecvID  string `json:"recvID"`
-	GroupID string `json:"groupID"`
 }
 
 // SingleReturnResult encapsulates the result of a single message send attempt.

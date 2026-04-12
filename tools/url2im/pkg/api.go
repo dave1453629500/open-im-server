@@ -18,13 +18,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
-	"github.com/openimsdk/protocol/auth"
-	"github.com/openimsdk/protocol/third"
-	"github.com/openimsdk/tools/errs"
+	"github.com/OpenIMSDK/protocol/auth"
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/protocol/third"
 )
 
 type Api struct {
@@ -38,7 +39,7 @@ type Api struct {
 func (a *Api) apiPost(ctx context.Context, path string, req any, resp any) error {
 	operationID, _ := ctx.Value("operationID").(string)
 	if operationID == "" {
-		return errs.New("call api operationID is empty")
+		return errors.New("call api operationID is empty")
 	}
 	reqBody, err := json.Marshal(req)
 	if err != nil {
@@ -87,13 +88,14 @@ func (a *Api) apiPost(ctx context.Context, path string, req any, resp any) error
 	return nil
 }
 
-func (a *Api) GetAdminToken(ctx context.Context) (string, error) {
-	req := auth.GetAdminTokenReq{
-		UserID: a.UserID,
-		Secret: a.Secret,
+func (a *Api) GetToken(ctx context.Context) (string, error) {
+	req := auth.UserTokenReq{
+		UserID:     a.UserID,
+		Secret:     a.Secret,
+		PlatformID: constant.AdminPlatformID,
 	}
-	var resp auth.GetAdminTokenResp
-	if err := a.apiPost(ctx, "/auth/get_admin_token", &req, &resp); err != nil {
+	var resp auth.UserTokenResp
+	if err := a.apiPost(ctx, "/auth/user_token", &req, &resp); err != nil {
 		return "", err
 	}
 	return resp.Token, nil

@@ -15,8 +15,8 @@
 package callbackstruct
 
 import (
-	"github.com/openimsdk/protocol/sdkws"
-	"github.com/openimsdk/protocol/wrapperspb"
+	"github.com/OpenIMSDK/protocol/sdkws"
+	"github.com/OpenIMSDK/protocol/wrapperspb"
 )
 
 type CallbackBeforeUpdateUserInfoReq struct {
@@ -26,7 +26,6 @@ type CallbackBeforeUpdateUserInfoReq struct {
 	FaceURL         *string `json:"faceURL"`
 	Ex              *string `json:"ex"`
 }
-
 type CallbackBeforeUpdateUserInfoResp struct {
 	CommonCallbackResp
 	Nickname *string `json:"nickName"`
@@ -72,6 +71,7 @@ type CallbackAfterUpdateUserInfoExResp struct {
 
 type CallbackBeforeUserRegisterReq struct {
 	CallbackCommand `json:"callbackCommand"`
+	Secret          string            `json:"secret"`
 	Users           []*sdkws.UserInfo `json:"users"`
 }
 
@@ -82,6 +82,7 @@ type CallbackBeforeUserRegisterResp struct {
 
 type CallbackAfterUserRegisterReq struct {
 	CallbackCommand `json:"callbackCommand"`
+	Secret          string            `json:"secret"`
 	Users           []*sdkws.UserInfo `json:"users"`
 }
 

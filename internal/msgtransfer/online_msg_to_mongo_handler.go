@@ -17,24 +17,42 @@ package msgtransfer
 import (
 	"context"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
-	pbmsg "github.com/openimsdk/protocol/msg"
-	"github.com/openimsdk/tools/log"
+	"github.com/IBM/sarama"
 	"google.golang.org/protobuf/proto"
+
+	pbmsg "github.com/OpenIMSDK/protocol/msg"
+	"github.com/OpenIMSDK/tools/log"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/controller"
+	kfk "github.com/openimsdk/open-im-server/v3/pkg/common/kafka"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 )
 
 type OnlineHistoryMongoConsumerHandler struct {
-	msgTransferDatabase controller.MsgTransferDatabase
+	historyConsumerGroup *kfk.MConsumerGroup
+	msgDatabase          controller.CommonMsgDatabase
 }
 
-func NewOnlineHistoryMongoConsumerHandler(database controller.MsgTransferDatabase) *OnlineHistoryMongoConsumerHandler {
-	return &OnlineHistoryMongoConsumerHandler{
-		msgTransferDatabase: database,
+func NewOnlineHistoryMongoConsumerHandler(database controller.CommonMsgDatabase) *OnlineHistoryMongoConsumerHandler {
+	mc := &OnlineHistoryMongoConsumerHandler{
+		historyConsumerGroup: kfk.NewMConsumerGroup(&kfk.MConsumerGroupConfig{
+			KafkaVersion:   sarama.V2_0_0_0,
+			OffsetsInitial: sarama.OffsetNewest, IsReturnErr: false,
+		}, []string{config.Config.Kafka.MsgToMongo.Topic},
+			config.Config.Kafka.Addr, config.Config.Kafka.ConsumerGroupID.MsgToMongo),
+		msgDatabase: database,
 	}
+	return mc
 }
 
-func (mc *OnlineHistoryMongoConsumerHandler) HandleChatWs2Mongo(ctx context.Context, key string, msg []byte) {
+func (mc *OnlineHistoryMongoConsumerHandler) handleChatWs2Mongo(
+	ctx context.Context,
+	cMsg *sarama.ConsumerMessage,
+	key string,
+	session sarama.ConsumerGroupSession,
+) {
+	msg := cMsg.Value
 	msgFromMQ := pbmsg.MsgDataToMongoByMQ{}
 	err := proto.Unmarshal(msg, &msgFromMQ)
 	if err != nil {
@@ -42,11 +60,11 @@ func (mc *OnlineHistoryMongoConsumerHandler) HandleChatWs2Mongo(ctx context.Cont
 		return
 	}
 	if len(msgFromMQ.MsgData) == 0 {
-		log.ZError(ctx, "msgFromMQ.MsgData is empty", nil, "key", key, "msg", msg)
+		log.ZError(ctx, "msgFromMQ.MsgData is empty", nil, "cMsg", cMsg)
 		return
 	}
-	log.ZDebug(ctx, "mongo consumer recv msg", "msgs", msgFromMQ.String())
-	err = mc.msgTransferDatabase.BatchInsertChat2DB(ctx, msgFromMQ.ConversationID, msgFromMQ.MsgData, msgFromMQ.LastSeq)
+	log.ZInfo(ctx, "mongo consumer recv msg", "msgs", msgFromMQ.String())
+	err = mc.msgDatabase.BatchInsertChat2DB(ctx, msgFromMQ.ConversationID, msgFromMQ.MsgData, msgFromMQ.LastSeq)
 	if err != nil {
 		log.ZError(
 			ctx,
@@ -61,12 +79,42 @@ func (mc *OnlineHistoryMongoConsumerHandler) HandleChatWs2Mongo(ctx context.Cont
 	} else {
 		prommetrics.MsgInsertMongoSuccessCounter.Inc()
 	}
-	//var seqs []int64
-	//for _, msg := range msgFromMQ.MsgData {
-	//	seqs = append(seqs, msg.Seq)
-	//}
-	//if err := mc.msgTransferDatabase.DeleteMessagesFromCache(ctx, msgFromMQ.ConversationID, seqs); err != nil {
-	//	log.ZError(ctx, "remove cache msg from redis err", err, "msg",
-	//		msgFromMQ.MsgData, "conversationID", msgFromMQ.ConversationID)
-	//}
+	var seqs []int64
+	for _, msg := range msgFromMQ.MsgData {
+		seqs = append(seqs, msg.Seq)
+	}
+	err = mc.msgDatabase.DeleteMessagesFromCache(ctx, msgFromMQ.ConversationID, seqs)
+	if err != nil {
+		log.ZError(
+			ctx,
+			"remove cache msg from redis err",
+			err,
+			"msg",
+			msgFromMQ.MsgData,
+			"conversationID",
+			msgFromMQ.ConversationID,
+		)
+	}
+	mc.msgDatabase.DelUserDeleteMsgsList(ctx, msgFromMQ.ConversationID, seqs)
+}
+
+func (OnlineHistoryMongoConsumerHandler) Setup(_ sarama.ConsumerGroupSession) error   { return nil }
+func (OnlineHistoryMongoConsumerHandler) Cleanup(_ sarama.ConsumerGroupSession) error { return nil }
+
+func (mc *OnlineHistoryMongoConsumerHandler) ConsumeClaim(
+	sess sarama.ConsumerGroupSession,
+	claim sarama.ConsumerGroupClaim,
+) error { // a instance in the consumer group
+	log.ZDebug(context.Background(), "online new session msg come", "highWaterMarkOffset",
+		claim.HighWaterMarkOffset(), "topic", claim.Topic(), "partition", claim.Partition())
+	for msg := range claim.Messages() {
+		ctx := mc.historyConsumerGroup.GetContextFromMsg(msg)
+		if len(msg.Value) != 0 {
+			mc.handleChatWs2Mongo(ctx, msg, string(msg.Key), sess)
+		} else {
+			log.ZError(ctx, "mongo msg get from kafka but is nil", nil, "conversationID", msg.Key)
+		}
+		sess.MarkMessage(msg, "")
+	}
+	return nil
 }

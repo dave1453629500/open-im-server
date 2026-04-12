@@ -53,8 +53,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-cmdutils
     id: openim-cmdutils
@@ -64,8 +71,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-crontask
     id: openim-crontask
@@ -75,8 +89,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-msggateway
     id: openim-msggateway
@@ -86,8 +107,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-msgtransfer
     id: openim-msgtransfer
@@ -97,8 +125,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-push
     id: openim-push
@@ -108,8 +143,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-rpc-auth
     id: openim-rpc-auth
@@ -119,8 +161,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-rpc-conversation
     id: openim-rpc-conversation
@@ -130,8 +179,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-rpc-friend
     id: openim-rpc-friend
@@ -141,8 +197,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-rpc-group
     id: openim-rpc-group
@@ -152,8 +215,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-rpc-msg
     id: openim-rpc-msg
@@ -163,8 +233,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-rpc-third
     id: openim-rpc-third
@@ -174,8 +251,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
   - binary: openim-rpc-user
     id: openim-rpc-user
@@ -185,8 +269,15 @@ builds:
       - windows
       - linux
     goarch:
+      - s390x
+      - mips64
+      - mips64le
       - amd64
+      - ppc64le
       - arm64
+    goarm:
+      - "6"
+      - "7"
 
 
 # TODO：Need a script, such as the init - release to help binary to find the right directory

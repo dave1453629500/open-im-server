@@ -15,171 +15,110 @@
 package msgtransfer
 
 import (
-	"context"
+	"errors"
 	"fmt"
+	"log"
+	"net/http"
+	"sync"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/mcache"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/redis"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database/mgo"
-	"github.com/openimsdk/open-im-server/v3/pkg/dbbuild"
-	"github.com/openimsdk/open-im-server/v3/pkg/mqbuild"
-	"github.com/openimsdk/tools/discovery"
-	"github.com/openimsdk/tools/mq"
-	"github.com/openimsdk/tools/utils/runtimeenv"
-
-	conf "github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
-	"github.com/openimsdk/tools/log"
+	"github.com/OpenIMSDK/tools/mw"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/cache"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/controller"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/unrelation"
+	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discoveryregister"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
+	"github.com/openimsdk/open-im-server/v3/pkg/rpcclient"
 )
 
 type MsgTransfer struct {
-	historyConsumer      mq.Consumer
-	historyMongoConsumer mq.Consumer
-	// This consumer aggregated messages, subscribed to the topic:toRedis,
-	//  the message is stored in redis, Incr Redis, and then the message is sent to toPush topic for push,
-	// and the message is sent to toMongo topic for persistence
-	historyHandler *OnlineHistoryRedisConsumerHandler
-	//This consumer handle message to mongo
-	historyMongoHandler *OnlineHistoryMongoConsumerHandler
-	ctx                 context.Context
-	//cancel              context.CancelFunc
+	historyCH      *OnlineHistoryRedisConsumerHandler // 这个消费者聚合消息, 订阅的topic：ws2ms_chat, 修改通知发往msg_to_modify topic, 消息存入redis后Incr Redis, 再发消息到ms2pschat topic推送， 发消息到msg_to_mongo topic持久化
+	historyMongoCH *OnlineHistoryMongoConsumerHandler // mongoDB批量插入, 成功后删除redis中消息，以及处理删除通知消息删除的 订阅的topic: msg_to_mongo
+	// modifyCH       *ModifyMsgConsumerHandler          // 负责消费修改消息通知的consumer, 订阅的topic: msg_to_modify
 }
 
-type Config struct {
-	MsgTransfer    conf.MsgTransfer
-	RedisConfig    conf.Redis
-	MongodbConfig  conf.Mongo
-	KafkaConfig    conf.Kafka
-	Share          conf.Share
-	WebhooksConfig conf.Webhooks
-	Discovery      conf.Discovery
-	Index          conf.Index
+func StartTransfer(prometheusPort int) error {
+	rdb, err := cache.NewRedis()
+	if err != nil {
+		return err
+	}
+	mongo, err := unrelation.NewMongo()
+	if err != nil {
+		return err
+	}
+	if err := mongo.CreateMsgIndex(); err != nil {
+		return err
+	}
+	client, err := kdisc.NewDiscoveryRegister(config.Config.Envs.Discovery)
+	/*
+		client, err := openkeeper.NewClient(config.Config.Zookeeper.ZkAddr, config.Config.Zookeeper.Schema,
+			openkeeper.WithFreq(time.Hour), openkeeper.WithRoundRobin(), openkeeper.WithUserNameAndPassword(config.Config.Zookeeper.Username,
+				config.Config.Zookeeper.Password), openkeeper.WithTimeout(10), openkeeper.WithLogger(log.NewZkLogger()))*/
+	if err != nil {
+		return err
+	}
+	if err := client.CreateRpcRootNodes(config.Config.GetServiceNames()); err != nil {
+		return err
+	}
+	client.AddOption(mw.GrpcClient(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	msgModel := cache.NewMsgCacheModel(rdb)
+	msgDocModel := unrelation.NewMsgMongoDriver(mongo.GetDatabase())
+	msgDatabase := controller.NewCommonMsgDatabase(msgDocModel, msgModel)
+	conversationRpcClient := rpcclient.NewConversationRpcClient(client)
+	groupRpcClient := rpcclient.NewGroupRpcClient(client)
+	encryptionRpcClient := rpcclient.NewEncryptionRpcClient(client)
+	msgTransfer := NewMsgTransfer(msgDatabase, &conversationRpcClient, &groupRpcClient, &encryptionRpcClient)
+	return msgTransfer.Start(prometheusPort)
 }
 
-func Start(ctx context.Context, config *Config, client discovery.Conn, server grpc.ServiceRegistrar) error {
-	builder := mqbuild.NewBuilder(&config.KafkaConfig)
+func NewMsgTransfer(
+	msgDatabase controller.CommonMsgDatabase,
+	conversationRpcClient *rpcclient.ConversationRpcClient,
+	groupRpcClient *rpcclient.GroupRpcClient,
+	encryptionRpcClient *rpcclient.EncryptionRpcClient,
+) *MsgTransfer {
+	return &MsgTransfer{
+		historyCH:      NewOnlineHistoryRedisConsumerHandler(msgDatabase, conversationRpcClient, groupRpcClient, encryptionRpcClient),
+		historyMongoCH: NewOnlineHistoryMongoConsumerHandler(msgDatabase),
+	}
+}
 
-	log.CInfo(ctx, "MSG-TRANSFER server is initializing", "runTimeEnv", runtimeenv.RuntimeEnvironment(), "prometheusPorts",
-		config.MsgTransfer.Prometheus.Ports, "index", config.Index)
-	dbb := dbbuild.NewBuilder(&config.MongodbConfig, &config.RedisConfig)
-	mgocli, err := dbb.Mongo(ctx)
-	if err != nil {
-		return err
+func (m *MsgTransfer) Start(prometheusPort int) error {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	fmt.Println("start msg transfer", "prometheusPort:", prometheusPort)
+	if prometheusPort <= 0 {
+		return errors.New("prometheusPort not correct")
 	}
-	rdb, err := dbb.Redis(ctx)
-	if err != nil {
-		return err
-	}
-
-	//if config.Discovery.Enable == conf.ETCD {
-	//	cm := disetcd.NewConfigManager(client.(*etcd.SvcDiscoveryRegistryImpl).GetClient(), []string{
-	//		config.MsgTransfer.GetConfigFileName(),
-	//		config.RedisConfig.GetConfigFileName(),
-	//		config.MongodbConfig.GetConfigFileName(),
-	//		config.KafkaConfig.GetConfigFileName(),
-	//		config.Share.GetConfigFileName(),
-	//		config.WebhooksConfig.GetConfigFileName(),
-	//		config.Discovery.GetConfigFileName(),
-	//		conf.LogConfigFileName,
-	//	})
-	//	cm.Watch(ctx)
-	//}
-	mongoProducer, err := builder.GetTopicProducer(ctx, config.KafkaConfig.ToMongoTopic)
-	if err != nil {
-		return err
-	}
-	pushProducer, err := builder.GetTopicProducer(ctx, config.KafkaConfig.ToPushTopic)
-	if err != nil {
-		return err
-	}
-	msgDocModel, err := mgo.NewMsgMongo(mgocli.GetDB())
-	if err != nil {
-		return err
-	}
-	var msgModel cache.MsgCache
-	if rdb == nil {
-		cm, err := mgo.NewCacheMgo(mgocli.GetDB())
-		if err != nil {
-			return err
-		}
-		msgModel = mcache.NewMsgCache(cm, msgDocModel)
+	if config.Config.ChatPersistenceMysql {
+		// go m.persistentCH.persistentConsumerGroup.RegisterHandleAndConsumer(m.persistentCH)
 	} else {
-		msgModel = redis.NewMsgCache(rdb, msgDocModel)
+		fmt.Println("msg transfer not start mysql consumer")
 	}
-	seqConversation, err := mgo.NewSeqConversationMongo(mgocli.GetDB())
+	go m.historyCH.historyConsumerGroup.RegisterHandleAndConsumer(m.historyCH)
+	go m.historyMongoCH.historyConsumerGroup.RegisterHandleAndConsumer(m.historyMongoCH)
+	// go m.modifyCH.modifyMsgConsumerGroup.RegisterHandleAndConsumer(m.modifyCH)
+	/*err := prome.StartPrometheusSrv(prometheusPort)
 	if err != nil {
 		return err
+	}*/
+	////////////////////////////
+	if config.Config.Prometheus.Enable {
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(
+			collectors.NewGoCollector(),
+		)
+		reg.MustRegister(prommetrics.GetGrpcCusMetrics("Transfer")...)
+		http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", prometheusPort), nil))
 	}
-	seqConversationCache := redis.NewSeqConversationCacheRedis(rdb, seqConversation)
-	seqUser, err := mgo.NewSeqUserMongo(mgocli.GetDB())
-	if err != nil {
-		return err
-	}
-	seqUserCache := redis.NewSeqUserCacheRedis(rdb, seqUser)
-	msgTransferDatabase, err := controller.NewMsgTransferDatabase(msgDocModel, msgModel, seqUserCache, seqConversationCache, mongoProducer, pushProducer)
-	if err != nil {
-		return err
-	}
-	historyConsumer, err := builder.GetTopicConsumer(ctx, config.KafkaConfig.ToRedisTopic)
-	if err != nil {
-		return err
-	}
-	historyMongoConsumer, err := builder.GetTopicConsumer(ctx, config.KafkaConfig.ToMongoTopic)
-	if err != nil {
-		return err
-	}
-	historyHandler, err := NewOnlineHistoryRedisConsumerHandler(ctx, client, config, msgTransferDatabase)
-	if err != nil {
-		return err
-	}
-	historyMongoHandler := NewOnlineHistoryMongoConsumerHandler(msgTransferDatabase)
-
-	msgTransfer := &MsgTransfer{
-		historyConsumer:      historyConsumer,
-		historyMongoConsumer: historyMongoConsumer,
-		historyHandler:       historyHandler,
-		historyMongoHandler:  historyMongoHandler,
-	}
-
-	return msgTransfer.Start(ctx)
-}
-
-func (m *MsgTransfer) Start(ctx context.Context) error {
-	var cancel context.CancelCauseFunc
-	m.ctx, cancel = context.WithCancelCause(ctx)
-
-	go func() {
-		for {
-			if err := m.historyConsumer.Subscribe(m.ctx, m.historyHandler.HandlerRedisMessage); err != nil {
-				cancel(fmt.Errorf("history consumer %w", err))
-				log.ZError(m.ctx, "historyConsumer err", err)
-				return
-			}
-		}
-	}()
-
-	go func() {
-		fn := func(ctx context.Context, key string, value []byte) error {
-			m.historyMongoHandler.HandleChatWs2Mongo(ctx, key, value)
-			return nil
-		}
-		for {
-			if err := m.historyMongoConsumer.Subscribe(m.ctx, fn); err != nil {
-				cancel(fmt.Errorf("history mongo consumer %w", err))
-				log.ZError(m.ctx, "historyMongoConsumer err", err)
-				return
-			}
-		}
-	}()
-
-	go m.historyHandler.HandleUserHasReadSeqMessages(m.ctx)
-
-	err := m.historyHandler.redisMessageBatches.Start()
-	if err != nil {
-		return err
-	}
-	<-m.ctx.Done()
-	return context.Cause(m.ctx)
+	////////////////////////////////////////
+	wg.Wait()
+	return nil
 }

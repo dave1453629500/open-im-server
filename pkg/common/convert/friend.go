@@ -17,26 +17,24 @@ package convert
 import (
 	"context"
 	"fmt"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
-	"github.com/openimsdk/protocol/relation"
 
-	"github.com/openimsdk/protocol/sdkws"
-	"github.com/openimsdk/tools/utils/datautil"
-	"github.com/openimsdk/tools/utils/timeutil"
+	"github.com/OpenIMSDK/protocol/sdkws"
+	"github.com/OpenIMSDK/tools/utils"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/table/relation"
 )
 
-func FriendPb2DB(friend *sdkws.FriendInfo) *model.Friend {
-	dbFriend := &model.Friend{}
-	err := datautil.CopyStructFields(dbFriend, friend)
-	if err != nil {
-		return nil
-	}
+func FriendPb2DB(friend *sdkws.FriendInfo) *relation.FriendModel {
+	dbFriend := &relation.FriendModel{}
+	utils.CopyStructFields(dbFriend, friend)
 	dbFriend.FriendUserID = friend.FriendUser.UserID
-	dbFriend.CreateTime = timeutil.UnixSecondToTime(friend.CreateTime)
+	dbFriend.CreateTime = utils.UnixSecondToTime(friend.CreateTime)
 	return dbFriend
 }
 
-func FriendDB2Pb(ctx context.Context, friendDB *model.Friend, getUsers func(ctx context.Context, userIDs []string) (map[string]*sdkws.UserInfo, error)) (*sdkws.FriendInfo, error) {
+func FriendDB2Pb(ctx context.Context, friendDB *relation.FriendModel,
+	getUsers func(ctx context.Context, userIDs []string) (map[string]*sdkws.UserInfo, error),
+) (*sdkws.FriendInfo, error) {
 	users, err := getUsers(ctx, []string{friendDB.FriendUserID})
 	if err != nil {
 		return nil, err
@@ -52,7 +50,11 @@ func FriendDB2Pb(ctx context.Context, friendDB *model.Friend, getUsers func(ctx 
 	}, nil
 }
 
-func FriendsDB2Pb(ctx context.Context, friendsDB []*model.Friend, getUsers func(ctx context.Context, userIDs []string) (map[string]*sdkws.UserInfo, error)) (friendsPb []*sdkws.FriendInfo, err error) {
+func FriendsDB2Pb(
+	ctx context.Context,
+	friendsDB []*relation.FriendModel,
+	getUsers func(ctx context.Context, userIDs []string) (map[string]*sdkws.UserInfo, error),
+) (friendsPb []*sdkws.FriendInfo, err error) {
 	if len(friendsDB) == 0 {
 		return nil, nil
 	}
@@ -67,11 +69,7 @@ func FriendsDB2Pb(ctx context.Context, friendsDB []*model.Friend, getUsers func(
 	}
 	for _, friend := range friendsDB {
 		friendPb := &sdkws.FriendInfo{FriendUser: &sdkws.UserInfo{}}
-		err := datautil.CopyStructFields(friendPb, friend)
-		if err != nil {
-			return nil, err
-		}
-
+		utils.CopyStructFields(friendPb, friend)
 		friendPb.FriendUser.UserID = users[friend.FriendUserID].UserID
 		friendPb.FriendUser.Nickname = users[friend.FriendUserID].Nickname
 		friendPb.FriendUser.FaceURL = users[friend.FriendUserID].FaceURL
@@ -83,22 +81,11 @@ func FriendsDB2Pb(ctx context.Context, friendsDB []*model.Friend, getUsers func(
 	return friendsPb, nil
 }
 
-func FriendOnlyDB2PbOnly(friendsDB []*model.Friend) []*relation.FriendInfoOnly {
-	return datautil.Slice(friendsDB, func(f *model.Friend) *relation.FriendInfoOnly {
-		return &relation.FriendInfoOnly{
-			OwnerUserID:    f.OwnerUserID,
-			FriendUserID:   f.FriendUserID,
-			Remark:         f.Remark,
-			CreateTime:     f.CreateTime.UnixMilli(),
-			AddSource:      f.AddSource,
-			OperatorUserID: f.OperatorUserID,
-			Ex:             f.Ex,
-			IsPinned:       f.IsPinned,
-		}
-	})
-}
-
-func FriendRequestDB2Pb(ctx context.Context, friendRequests []*model.FriendRequest, getUsers func(ctx context.Context, userIDs []string) (map[string]*sdkws.UserInfo, error)) ([]*sdkws.FriendRequest, error) {
+func FriendRequestDB2Pb(
+	ctx context.Context,
+	friendRequests []*relation.FriendRequestModel,
+	getUsers func(ctx context.Context, userIDs []string) (map[string]*sdkws.UserInfo, error),
+) ([]*sdkws.FriendRequest, error) {
 	if len(friendRequests) == 0 {
 		return nil, nil
 	}
@@ -107,7 +94,7 @@ func FriendRequestDB2Pb(ctx context.Context, friendRequests []*model.FriendReque
 		userIDMap[friendRequest.ToUserID] = struct{}{}
 		userIDMap[friendRequest.FromUserID] = struct{}{}
 	}
-	users, err := getUsers(ctx, datautil.Keys(userIDMap))
+	users, err := getUsers(ctx, utils.Keys(userIDMap))
 	if err != nil {
 		return nil, err
 	}
@@ -143,8 +130,8 @@ func FriendPb2DBMap(friend *sdkws.FriendInfo) map[string]any {
 
 	val := make(map[string]any)
 
-	// Assuming FriendInfo has similar fields to those in Friend.
-	// Add or remove fields based on your actual FriendInfo and Friend structures.
+	// Assuming FriendInfo has similar fields to those in FriendModel.
+	// Add or remove fields based on your actual FriendInfo and FriendModel structures.
 	if friend.FriendUser != nil {
 		if friend.FriendUser.UserID != "" {
 			val["friend_user_id"] = friend.FriendUser.UserID

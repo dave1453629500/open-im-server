@@ -1,7 +1,6 @@
 # OpenIM Branch Management and Versioning: A Blueprint for High-Grade Software Development
 
 [📚 **OpenIM TOC**](#openim-branch-management-and-versioning-a-blueprint-for-high-grade-software-development)
-- [OpenIM Branch Management and Versioning: A Blueprint for High-Grade Software Development](#openim-branch-management-and-versioning-a-blueprint-for-high-grade-software-development)
   - [Unfolding the Mechanism of OpenIM Version Maintenance](#unfolding-the-mechanism-of-openim-version-maintenance)
   - [Main Branch: The Heart of OpenIM Development](#main-branch-the-heart-of-openim-development)
   - [Release Branch: The Beacon of Stability](#release-branch-the-beacon-of-stability)
@@ -9,21 +8,8 @@
   - [Release Management: A Guided Tour](#release-management-a-guided-tour)
   - [Milestones, Branching, and Addressing Major Bugs](#milestones-branching-and-addressing-major-bugs)
   - [Version Skew Policy](#version-skew-policy)
-    - [Supported version skew](#supported-version-skew)
-    - [OpenIM Versioning, Branching, and Tag Strategy](#openim-versioning-branching-and-tag-strategy)
-      - [Supported Version Skew](#supported-version-skew-1)
-        - [openim-api](#openim-api)
-        - [openim-rpc-\* Components](#openim-rpc--components)
-        - [Other OpenIM Services](#other-openim-services)
-      - [Supported Component Upgrade Order](#supported-component-upgrade-order)
-        - [openim-api](#openim-api-1)
-        - [openim-rpc-\* Components](#openim-rpc--components-1)
-        - [Other OpenIM Services](#other-openim-services-1)
-      - [Conclusion](#conclusion)
   - [Applying Principles: A Git Workflow Example](#applying-principles-a-git-workflow-example)
-  - [Release Process](#release-process)
   - [Docker Images Version Management](#docker-images-version-management)
-  - [More](#more)
 
 
 At OpenIM, we acknowledge the profound impact of implementing a robust and efficient version management system, hence we abide by the established standards of [Semantic Versioning 2.0.0](https://semver.org/lang/zh-CN/).
@@ -95,6 +81,7 @@ We reinforce our approach to branch management and versioning with stringent tes
 ## Version Skew Policy
 
 This document describes the maximum version skew supported between various openim components. Specific cluster deployment tools may place additional restrictions on version skew.
+
 
 ### Supported version skew
 
@@ -209,7 +196,6 @@ git merge release-v3.1
 # Push the updates to the main branch
 git push origin main
 ```
-
 ##  Release Process
 
 ```
@@ -227,12 +213,3 @@ Throughout this process, active communication within the team is pivotal to main
 ## Docker Images Version Management
 
 For more details on managing Docker image versions, visit [OpenIM Docker Images Administration](https://github.com/openimsdk/open-im-server/blob/main/docs/contrib/images.md).
-
-## More 
-
-More on multi-branch version management design and version management design at helm charts：
-
-About Helm's version management strategy for Multiple Apps and multiple Services:
-
-+ [中文版本管理文档](https://github.com/openimsdk/helm-charts/blob/main/docs/contrib/version-zh.md)
-+ [English version management documents](https://github.com/openimsdk/helm-charts/blob/main/docs/contrib/version.md)

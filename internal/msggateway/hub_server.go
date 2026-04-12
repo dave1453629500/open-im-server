@@ -16,92 +16,78 @@ package msggateway
 
 import (
 	"context"
-	"sync/atomic"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
+	"google.golang.org/grpc"
+
+	"github.com/OpenIMSDK/protocol/constant"
+	"github.com/OpenIMSDK/protocol/msggateway"
+	"github.com/OpenIMSDK/tools/discoveryregistry"
+	"github.com/OpenIMSDK/tools/errs"
+	"github.com/OpenIMSDK/tools/log"
+	"github.com/OpenIMSDK/tools/mcontext"
+	"github.com/OpenIMSDK/tools/utils"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/protocol/msggateway"
-	"github.com/openimsdk/protocol/sdkws"
-	"github.com/openimsdk/tools/discovery"
-	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/log"
-	"github.com/openimsdk/tools/mcontext"
-	"github.com/openimsdk/tools/mq/memamq"
-	"github.com/openimsdk/tools/utils/datautil"
-	"google.golang.org/grpc"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/cache"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/startrpc"
 )
 
-func (s *Server) InitServer(ctx context.Context, config *Config, disCov discovery.Conn, server grpc.ServiceRegistrar) error {
-	userConn, err := disCov.GetConn(ctx, config.Discovery.RpcService.User)
+func (s *Server) InitServer(disCov discoveryregistry.SvcDiscoveryRegistry, server *grpc.Server) error {
+	rdb, err := cache.NewRedis()
 	if err != nil {
 		return err
 	}
-	s.userClient = rpcli.NewUserClient(userConn)
-	if err := s.LongConnServer.SetDiscoveryRegistry(ctx, disCov, config); err != nil {
-		return err
-	}
+
+	msgModel := cache.NewMsgCacheModel(rdb)
+	s.LongConnServer.SetDiscoveryRegistry(disCov)
+	s.LongConnServer.SetCacheHandler(msgModel)
 	msggateway.RegisterMsgGatewayServer(server, s)
-	if s.ready != nil {
-		return s.ready(s)
-	}
 	return nil
 }
 
-//func (s *Server) Start(ctx context.Context, index int, conf *Config) error {
-//	return startrpc.Start(ctx, &conf.Discovery, &conf.MsgGateway.Prometheus, conf.MsgGateway.ListenIP,
-//		conf.MsgGateway.RPC.RegisterIP,
-//		conf.MsgGateway.RPC.AutoSetPorts, conf.MsgGateway.RPC.Ports, index,
-//		conf.Discovery.RpcService.MessageGateway,
-//		nil,
-//		conf,
-//		[]string{
-//			conf.Share.GetConfigFileName(),
-//			conf.Discovery.GetConfigFileName(),
-//			conf.MsgGateway.GetConfigFileName(),
-//			conf.WebhooksConfig.GetConfigFileName(),
-//			conf.RedisConfig.GetConfigFileName(),
-//		},
-//		[]string{
-//			conf.Discovery.RpcService.MessageGateway,
-//		},
-//		s.InitServer,
-//	)
-//}
+func (s *Server) Start() error {
+	return startrpc.Start(
+		s.rpcPort,
+		config.Config.RpcRegisterName.OpenImMessageGatewayName,
+		s.prometheusPort,
+		s.InitServer,
+	)
+}
 
 type Server struct {
-	msggateway.UnimplementedMsgGatewayServer
-
+	rpcPort        int
+	prometheusPort int
 	LongConnServer LongConnServer
-	config         *Config
-	pushTerminal   map[int]struct{}
-	ready          func(srv *Server) error
-	queue          *memamq.MemoryQueue
-	userClient     *rpcli.UserClient
+	pushTerminal   []int
 }
 
 func (s *Server) SetLongConnServer(LongConnServer LongConnServer) {
 	s.LongConnServer = LongConnServer
 }
 
-func NewServer(longConnServer LongConnServer, conf *Config, ready func(srv *Server) error) *Server {
-	s := &Server{
+func NewServer(rpcPort int, proPort int, longConnServer LongConnServer) *Server {
+	return &Server{
+		rpcPort:        rpcPort,
+		prometheusPort: proPort,
 		LongConnServer: longConnServer,
-		pushTerminal:   make(map[int]struct{}),
-		config:         conf,
-		ready:          ready,
-		queue:          memamq.NewMemoryQueue(512, 1024*16),
+		pushTerminal:   []int{constant.IOSPlatformID, constant.AndroidPlatformID},
 	}
-	s.pushTerminal[constant.IOSPlatformID] = struct{}{}
-	s.pushTerminal[constant.AndroidPlatformID] = struct{}{}
-	return s
 }
 
-func (s *Server) GetUsersOnlineStatus(ctx context.Context, req *msggateway.GetUsersOnlineStatusReq) (*msggateway.GetUsersOnlineStatusResp, error) {
-	if !authverify.IsAppManagerUid(ctx, s.config.Share.IMAdminUserID) {
-		return nil, errs.ErrNoPermission.WrapMsg("only app manager")
+func (s *Server) OnlinePushMsg(
+	context context.Context,
+	req *msggateway.OnlinePushMsgReq,
+) (*msggateway.OnlinePushMsgResp, error) {
+	panic("implement me")
+}
+
+func (s *Server) GetUsersOnlineStatus(
+	ctx context.Context,
+	req *msggateway.GetUsersOnlineStatusReq,
+) (*msggateway.GetUsersOnlineStatusResp, error) {
+	if !authverify.IsAppManagerUid(ctx) {
+		return nil, errs.ErrNoPermission.Wrap("only app manager")
 	}
 	var resp msggateway.GetUsersOnlineStatusResp
 	for _, userID := range req.UserIDs {
@@ -118,115 +104,92 @@ func (s *Server) GetUsersOnlineStatus(ctx context.Context, req *msggateway.GetUs
 			}
 
 			ps := new(msggateway.GetUsersOnlineStatusResp_SuccessDetail)
-			ps.PlatformID = int32(client.PlatformID)
+			ps.Platform = constant.PlatformIDToName(client.PlatformID)
+			ps.Status = constant.OnlineStatus
 			ps.ConnID = client.ctx.GetConnID()
 			ps.Token = client.token
 			ps.IsBackground = client.IsBackground
-			uresp.Status = constant.Online
+			uresp.Status = constant.OnlineStatus
 			uresp.DetailPlatformStatus = append(uresp.DetailPlatformStatus, ps)
 		}
-		if uresp.Status == constant.Online {
+		if uresp.Status == constant.OnlineStatus {
 			resp.SuccessResult = append(resp.SuccessResult, uresp)
 		}
 	}
 	return &resp, nil
 }
 
-func (s *Server) pushToUser(ctx context.Context, userID string, msgData *sdkws.MsgData) *msggateway.SingleMsgToUserResults {
-	clients, ok := s.LongConnServer.GetUserAllCons(userID)
-	if !ok {
-		log.ZDebug(ctx, "push user not online", "userID", userID)
-		return &msggateway.SingleMsgToUserResults{
-			UserID: userID,
+func (s *Server) OnlineBatchPushOneMsg(
+	ctx context.Context,
+	req *msggateway.OnlineBatchPushOneMsgReq,
+) (*msggateway.OnlineBatchPushOneMsgResp, error) {
+	panic("implement me")
+}
+
+func (s *Server) SuperGroupOnlineBatchPushOneMsg(
+	ctx context.Context,
+	req *msggateway.OnlineBatchPushOneMsgReq,
+) (*msggateway.OnlineBatchPushOneMsgResp, error) {
+
+	var singleUserResults []*msggateway.SingleMsgToUserResults
+
+	for _, v := range req.PushToUserIDs {
+		var resp []*msggateway.SingleMsgToUserPlatform
+		results := &msggateway.SingleMsgToUserResults{
+			UserID: v,
 		}
-	}
-	log.ZDebug(ctx, "push user online", "clients", clients, "userID", userID)
-	result := &msggateway.SingleMsgToUserResults{
-		UserID: userID,
-		Resp:   make([]*msggateway.SingleMsgToUserPlatform, 0, len(clients)),
-	}
-	for _, client := range clients {
-		if client == nil {
+		clients, ok := s.LongConnServer.GetUserAllCons(v)
+		if !ok {
+			log.ZDebug(ctx, "push user not online", "userID", v)
+			results.Resp = resp
+			singleUserResults = append(singleUserResults, results)
 			continue
 		}
-		userPlatform := &msggateway.SingleMsgToUserPlatform{
-			RecvPlatFormID: int32(client.PlatformID),
-		}
-		if !client.IsBackground ||
-			(client.IsBackground && client.PlatformID != constant.IOSPlatformID) {
-			err := client.PushMessage(ctx, msgData)
-			if err != nil {
-				log.ZWarn(ctx, "online push msg failed", err, "userID", userID, "platformID", client.PlatformID)
-				userPlatform.ResultCode = int64(servererrs.ErrPushMsgErr.Code())
-			} else {
-				if _, ok := s.pushTerminal[client.PlatformID]; ok {
-					result.OnlinePush = true
+
+		log.ZDebug(ctx, "push user online", "clients", clients, "userID", v)
+		for _, client := range clients {
+			if client == nil {
+				continue
+			}
+
+			userPlatform := &msggateway.SingleMsgToUserPlatform{
+				RecvID:         v,
+				RecvPlatFormID: int32(client.PlatformID),
+			}
+			if !client.IsBackground ||
+				(client.IsBackground && client.PlatformID != constant.IOSPlatformID) {
+				err := client.PushMessage(ctx, req.MsgData)
+				if err != nil {
+					userPlatform.ResultCode = -2
+					resp = append(resp, userPlatform)
+				} else {
+					if utils.IsContainInt(client.PlatformID, s.pushTerminal) {
+						results.OnlinePush = true
+						resp = append(resp, userPlatform)
+					}
 				}
+			} else {
+				userPlatform.ResultCode = -3
+				resp = append(resp, userPlatform)
 			}
-		} else {
-			userPlatform.ResultCode = int64(servererrs.ErrIOSBackgroundPushErr.Code())
 		}
-		result.Resp = append(result.Resp, userPlatform)
+		results.Resp = resp
+		singleUserResults = append(singleUserResults, results)
 	}
-	return result
+
+	return &msggateway.OnlineBatchPushOneMsgResp{
+		SinglePushResult: singleUserResults,
+	}, nil
 }
 
-func (s *Server) SuperGroupOnlineBatchPushOneMsg(ctx context.Context, req *msggateway.OnlineBatchPushOneMsgReq) (*msggateway.OnlineBatchPushOneMsgResp, error) {
-	if len(req.PushToUserIDs) == 0 {
-		return &msggateway.OnlineBatchPushOneMsgResp{}, nil
-	}
-	ch := make(chan *msggateway.SingleMsgToUserResults, len(req.PushToUserIDs))
-	var count atomic.Int64
-	count.Add(int64(len(req.PushToUserIDs)))
-	for i := range req.PushToUserIDs {
-		userID := req.PushToUserIDs[i]
-		err := s.queue.PushCtx(ctx, func() {
-			ch <- s.pushToUser(ctx, userID, req.MsgData)
-			if count.Add(-1) == 0 {
-				close(ch)
-			}
-		})
-		if err != nil {
-			if count.Add(-1) == 0 {
-				close(ch)
-			}
-			log.ZError(ctx, "pushToUser MemoryQueue failed", err, "userID", userID)
-			ch <- &msggateway.SingleMsgToUserResults{
-				UserID: userID,
-			}
-		}
-	}
-	resp := &msggateway.OnlineBatchPushOneMsgResp{
-		SinglePushResult: make([]*msggateway.SingleMsgToUserResults, 0, len(req.PushToUserIDs)),
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			log.ZError(ctx, "SuperGroupOnlineBatchPushOneMsg ctx done", context.Cause(ctx))
-			userIDSet := datautil.SliceSet(req.PushToUserIDs)
-			for _, results := range resp.SinglePushResult {
-				delete(userIDSet, results.UserID)
-			}
-			for userID := range userIDSet {
-				resp.SinglePushResult = append(resp.SinglePushResult, &msggateway.SingleMsgToUserResults{
-					UserID: userID,
-				})
-			}
-			return resp, nil
-		case res, ok := <-ch:
-			if !ok {
-				return resp, nil
-			}
-			resp.SinglePushResult = append(resp.SinglePushResult, res)
-		}
-	}
-}
-
-func (s *Server) KickUserOffline(ctx context.Context, req *msggateway.KickUserOfflineReq) (*msggateway.KickUserOfflineResp, error) {
+func (s *Server) KickUserOffline(
+	ctx context.Context,
+	req *msggateway.KickUserOfflineReq,
+) (*msggateway.KickUserOfflineResp, error) {
 	for _, v := range req.KickUserIDList {
 		clients, _, ok := s.LongConnServer.GetUserPlatformCons(v, int(req.PlatformID))
 		if !ok {
-			log.ZDebug(ctx, "conn not exist", "userID", v, "platformID", req.PlatformID)
+			log.ZInfo(ctx, "conn not exist", "userID", v, "platformID", req.PlatformID)
 			continue
 		}
 
@@ -242,7 +205,10 @@ func (s *Server) KickUserOffline(ctx context.Context, req *msggateway.KickUserOf
 	return &msggateway.KickUserOfflineResp{}, nil
 }
 
-func (s *Server) MultiTerminalLoginCheck(ctx context.Context, req *msggateway.MultiTerminalLoginCheckReq) (*msggateway.MultiTerminalLoginCheckResp, error) {
+func (s *Server) MultiTerminalLoginCheck(
+	ctx context.Context,
+	req *msggateway.MultiTerminalLoginCheckReq,
+) (*msggateway.MultiTerminalLoginCheckResp, error) {
 	if oldClients, userOK, clientOK := s.LongConnServer.GetUserPlatformCons(req.UserID, int(req.PlatformID)); userOK {
 		tempUserCtx := newTempContext()
 		tempUserCtx.SetToken(req.Token)

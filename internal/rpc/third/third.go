@@ -17,126 +17,88 @@ package third
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/mcache"
-	"github.com/openimsdk/open-im-server/v3/pkg/dbbuild"
-	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
-	"github.com/openimsdk/tools/s3/disable"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/mgo"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/unrelation"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/s3"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/s3/cos"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/s3/minio"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/s3/oss"
+
+	"google.golang.org/grpc"
+
+	"github.com/OpenIMSDK/protocol/third"
+	"github.com/OpenIMSDK/tools/discoveryregistry"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/redis"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database/mgo"
-	"github.com/openimsdk/open-im-server/v3/pkg/localcache"
-	"github.com/openimsdk/tools/s3/aws"
-	"github.com/openimsdk/tools/s3/kodo"
-
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
-	"github.com/openimsdk/protocol/third"
-	"github.com/openimsdk/tools/discovery"
-	"github.com/openimsdk/tools/s3"
-	"github.com/openimsdk/tools/s3/cos"
-	"github.com/openimsdk/tools/s3/minio"
-	"github.com/openimsdk/tools/s3/oss"
-	"google.golang.org/grpc"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/cache"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/db/controller"
+	"github.com/openimsdk/open-im-server/v3/pkg/rpcclient"
 )
 
-type thirdServer struct {
-	third.UnimplementedThirdServer
-	thirdDatabase controller.ThirdDatabase
-	s3dataBase    controller.S3Database
-	defaultExpire time.Duration
-	config        *Config
-	s3            s3.Interface
-	userClient    *rpcli.UserClient
-}
-
-type Config struct {
-	RpcConfig          config.Third
-	RedisConfig        config.Redis
-	MongodbConfig      config.Mongo
-	NotificationConfig config.Notification
-	Share              config.Share
-	MinioConfig        config.Minio
-	LocalCacheConfig   config.LocalCache
-	Discovery          config.Discovery
-}
-
-func Start(ctx context.Context, config *Config, client discovery.Conn, server grpc.ServiceRegistrar) error {
-	dbb := dbbuild.NewBuilder(&config.MongodbConfig, &config.RedisConfig)
-	mgocli, err := dbb.Mongo(ctx)
+func Start(client discoveryregistry.SvcDiscoveryRegistry, server *grpc.Server) error {
+	mongo, err := unrelation.NewMongo()
 	if err != nil {
 		return err
 	}
-	rdb, err := dbb.Redis(ctx)
+	logdb, err := mgo.NewLogMongo(mongo.GetDatabase())
 	if err != nil {
 		return err
 	}
-
-	logdb, err := mgo.NewLogMongo(mgocli.GetDB())
+	s3db, err := mgo.NewS3Mongo(mongo.GetDatabase())
 	if err != nil {
 		return err
 	}
-	s3db, err := mgo.NewS3Mongo(mgocli.GetDB())
+	apiURL := config.Config.Object.ApiURL
+	if apiURL == "" {
+		return fmt.Errorf("api url is empty")
+	}
+	if _, err := url.Parse(config.Config.Object.ApiURL); err != nil {
+		return err
+	}
+	if apiURL[len(apiURL)-1] != '/' {
+		apiURL += "/"
+	}
+	apiURL += "object/"
+	rdb, err := cache.NewRedis()
 	if err != nil {
 		return err
 	}
-	var thirdCache cache.ThirdCache
-	if rdb == nil {
-		tc, err := mgo.NewCacheMgo(mgocli.GetDB())
-		if err != nil {
-			return err
-		}
-		thirdCache = mcache.NewThirdCache(tc)
-	} else {
-		thirdCache = redis.NewThirdCache(rdb)
-	}
-	// Select the oss method according to the profile policy
+	// 根据配置文件策略选择 oss 方式
+	enable := config.Config.Object.Enable
 	var o s3.Interface
-	switch enable := config.RpcConfig.Object.Enable; enable {
+	switch config.Config.Object.Enable {
 	case "minio":
-		var minioCache minio.Cache
-		if rdb == nil {
-			mc, err := mgo.NewCacheMgo(mgocli.GetDB())
-			if err != nil {
-				return err
-			}
-			minioCache = mcache.NewMinioCache(mc)
-		} else {
-			minioCache = redis.NewMinioCache(rdb)
-		}
-		o, err = minio.NewMinio(ctx, minioCache, *config.MinioConfig.Build())
+		o, err = minio.NewMinio(cache.NewMinioCache(rdb))
 	case "cos":
-		o, err = cos.NewCos(*config.RpcConfig.Object.Cos.Build())
+		o, err = cos.NewCos()
 	case "oss":
-		o, err = oss.NewOSS(*config.RpcConfig.Object.Oss.Build())
-	case "kodo":
-		o, err = kodo.NewKodo(*config.RpcConfig.Object.Kodo.Build())
-	case "aws":
-		o, err = aws.NewAws(*config.RpcConfig.Object.Aws.Build())
-	case "":
-		o = disable.NewDisable()
+		o, err = oss.NewOSS()
 	default:
 		err = fmt.Errorf("invalid object enable: %s", enable)
 	}
 	if err != nil {
 		return err
 	}
-	userConn, err := client.GetConn(ctx, config.Discovery.RpcService.User)
-	if err != nil {
-		return err
-	}
-	localcache.InitLocalCache(&config.LocalCacheConfig)
 	third.RegisterThirdServer(server, &thirdServer{
-		thirdDatabase: controller.NewThirdDatabase(thirdCache, logdb),
+		apiURL:        apiURL,
+		thirdDatabase: controller.NewThirdDatabase(cache.NewMsgCacheModel(rdb), logdb),
+		userRpcClient: rpcclient.NewUserRpcClient(client),
 		s3dataBase:    controller.NewS3Database(rdb, o, s3db),
 		defaultExpire: time.Hour * 24 * 7,
-		config:        config,
-		s3:            o,
-		userClient:    rpcli.NewUserClient(userConn),
 	})
 	return nil
+}
+
+type thirdServer struct {
+	apiURL        string
+	thirdDatabase controller.ThirdDatabase
+	s3dataBase    controller.S3Database
+	userRpcClient rpcclient.UserRpcClient
+	defaultExpire time.Duration
 }
 
 func (t *thirdServer) FcmUpdateToken(ctx context.Context, req *third.FcmUpdateTokenReq) (resp *third.FcmUpdateTokenResp, err error) {
